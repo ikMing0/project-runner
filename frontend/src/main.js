@@ -1,8 +1,10 @@
 import './style.css';
 import { isNewRun, actionableError, serviceIDs, activeState, groupState } from './run-state.mjs';
+import { TerminalConsole } from './terminal-console.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, GetStatuses, GetLogs,
   PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
+  NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal,
 } from '../wailsjs/go/main/App';
 import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
 
@@ -71,9 +73,10 @@ app.innerHTML = `
           <div id="log-resizer" class="log-resizer" role="separator" aria-label="调整运行日志高度" aria-orientation="horizontal" aria-controls="log-output" tabindex="0" title="上下拖动，调整运行日志高度"><span></span></div>
           <section class="logs panel">
             <div id="service-bar" class="service-bar hidden"><div id="service-tabs" class="service-tabs" role="tablist" aria-label="服务日志"></div><div class="service-actions"><button id="service-start" class="button small">启动当前服务</button><button id="service-stop" class="button small danger">停止当前服务</button></div></div>
-            <div class="log-toolbar"><div><h2>运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="open-browser" class="button small">打开页面</button></div></div>
-            <div class="log-filterbar"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span></div>
+            <div class="log-toolbar"><div class="output-heading"><h2 id="output-title">运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="open-browser" class="button small">打开页面</button></div></div>
+            <div class="log-filterbar"><div class="log-view-controls"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><button id="terminal-toggle" class="terminal-toggle" type="button" aria-controls="terminal-pane" aria-pressed="false"><span aria-hidden="true">&gt;_</span> 终端</button></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span><span id="terminal-shortcuts" class="hidden">Ctrl+C 中断 · Ctrl+V 粘贴</span></div>
             <div id="log-output" class="log-output"><div class="log-placeholder">启动项目后，日志将在这里实时显示。</div></div>
+            <div id="terminal-pane" class="terminal-pane hidden"><div class="terminal-tabbar"><div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端标签页"></div><button id="terminal-new" class="button small" type="button">＋ 新标签页</button></div><div id="terminal-workspace" class="terminal-workspace"></div></div>
           </section>
         </div>
       </div>
@@ -84,6 +87,21 @@ app.innerHTML = `
 `;
 
 const $ = (id) => document.getElementById(id);
+const terminalUI = new TerminalConsole({
+  api: { NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal },
+  prepare: async () => {
+    if (!draft?.id || dirty) await saveCurrent();
+    return terminalContext();
+  },
+  notify,
+  onLogs: () => { if (draft) { renderHeader(); renderLogs(); } },
+  onLayout: () => { if (draft && configOpen) setLogHeight(preferredLogHeight); },
+  events: EventsOn,
+});
+
+function terminalContext() {
+  return { projectId: draft?.id || '', serviceId: logServiceID(), paired: !!draft?.frontend };
+}
 let projects = [];
 let statuses = new Map();
 let current = null;
@@ -110,8 +128,9 @@ function logHeightBounds() {
   const content = $('content');
   const style = getComputedStyle(content);
   const available = content.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - $('log-resizer').offsetHeight;
-  const min = draft.frontend ? 220 : 170;
-  return { min, max: Math.max(min, Math.floor(available - 104)) };
+  const max = Math.max(170, Math.floor(available - 104));
+  const min = Math.min(max, terminalUI.isVisible() ? 320 : draft.frontend ? 220 : 170);
+  return { min, max };
 }
 
 function setLogHeight(height, save = false) {
@@ -154,6 +173,7 @@ function canStartGroup(project) { return serviceIDs(project).some((id) => !isAct
 function serviceProject() { return logSide === 'frontend' && draft?.frontend ? { ...draft.frontend, id: logServiceID(), kind: 'node' } : draft; }
 async function selectLogSide(side) {
   logSide = side;
+  terminalUI.showLogs();
   const version = ++logLoadVersion;
   logs = [];
   renderHeader();
@@ -415,6 +435,7 @@ function renderHeader() {
   }
   $('service-start').disabled = pending || isActive(service.id);
   $('service-stop').disabled = pending || !isActive(service.id);
+  terminalUI.setContext(terminalContext());
 }
 
 function renderProxyHint() {
@@ -448,7 +469,7 @@ function renderLogCounts() {
   const folded = logs.filter((line) => !['error', 'warn', 'system'].includes(logLevel(line))).length;
   $('log-filter-counts').textContent = `错误 ${errors} · 警告 ${warnings}${logMode === 'focus' ? ` · 折叠 ${folded} 行普通日志` : ''}`;
   document.querySelectorAll('.log-filter').forEach((button) => {
-    const selected = button.dataset.logFilter === logMode;
+    const selected = button.dataset.logFilter === logMode && !terminalUI.isVisible();
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', String(selected));
   });
@@ -512,7 +533,7 @@ function render() {
   renderList();
   $('empty-state').classList.toggle('hidden', !!draft);
   $('project-view').classList.toggle('hidden', !draft);
-  if (!draft) return;
+  if (!draft) { terminalUI.setContext(null); return; }
   renderHeader();
   renderForm();
   renderLogs();
@@ -657,7 +678,7 @@ function bind() {
   $('save').onclick = async () => { try { await saveCurrent(); } catch (error) { notify(error, true); } };
   $('delete').onclick = async () => {
     if (!confirm(`删除“${draft.name}”的运行配置？`)) return;
-    try { await DeleteProject(draft.id); projects = await ListProjects(); draft = null; current = null; logs = []; render(); notify('运行配置已删除'); }
+    try { const id = draft.id; await DeleteProject(id); terminalUI.forgetProject(id); projects = await ListProjects(); draft = null; current = null; logs = []; render(); notify('运行配置已删除'); }
     catch (error) { notify(error, true); }
   };
   $('start').onclick = () => act('start');
@@ -718,8 +739,8 @@ function bind() {
     setLogHeight(next, true);
   });
   new ResizeObserver(() => { if (draft && configOpen) setLogHeight(preferredLogHeight); }).observe($('content'));
-  document.querySelectorAll('.log-filter').forEach((button) => { button.onclick = () => { logMode = button.dataset.logFilter; renderLogs(); }; });
-  $('issue-view').onclick = () => { logMode = 'focus'; renderLogs(); document.querySelector('.logs').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  document.querySelectorAll('.log-filter').forEach((button) => { button.onclick = () => { logMode = button.dataset.logFilter; terminalUI.showLogs(); }; });
+  $('issue-view').onclick = () => { logMode = 'focus'; terminalUI.showLogs(); document.querySelector('.logs').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   EventsOn('project:status', (status) => {
     if (isNewRun(statuses.get(status.id), status)) {
       alertedRuns.delete(status.id);
@@ -756,6 +777,7 @@ function bind() {
 }
 
 bind();
+terminalUI.restore().catch((error) => notify(`恢复终端失败：${error}`, true));
 setInterval(refreshStartupTimes, 500);
 Promise.all([ListProjects(), GetStatuses()]).then(([items, states]) => {
   projects = items || [];

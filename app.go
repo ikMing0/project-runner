@@ -67,19 +67,22 @@ type Status struct {
 }
 
 type App struct {
-	ctx        context.Context
-	mu         sync.Mutex
-	projects   map[string]Project
-	runs       map[string]*run
-	history    map[string][]LogLine
-	statuses   map[string]Status
-	configPath string
-	groupMu    sync.Mutex
-	closing    bool // guarded by groupMu
+	ctx            context.Context
+	mu             sync.Mutex
+	projects       map[string]Project
+	runs           map[string]*run
+	history        map[string][]LogLine
+	statuses       map[string]Status
+	configPath     string
+	groupMu        sync.Mutex
+	closing        bool // guarded by groupMu
+	terminalMu     sync.Mutex
+	terminals      map[string]*terminalSession
+	terminalNumber int
 }
 
 func NewApp() *App {
-	return &App{projects: map[string]Project{}, runs: map[string]*run{}, history: map[string][]LogLine{}, statuses: map[string]Status{}}
+	return &App{projects: map[string]Project{}, runs: map[string]*run{}, history: map[string][]LogLine{}, statuses: map[string]Status{}, terminals: map[string]*terminalSession{}}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -116,6 +119,7 @@ func (a *App) shutdown(ctx context.Context) {
 	for _, r := range runs {
 		r.stop()
 	}
+	a.closeProjectTerminals("")
 	for _, r := range runs {
 		<-r.done
 	}
@@ -285,6 +289,7 @@ func (a *App) DeleteProject(id string) error {
 	delete(a.statuses, id)
 	delete(a.history, frontendID(id))
 	delete(a.statuses, frontendID(id))
+	a.closeProjectTerminals(id)
 	return nil
 }
 
