@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,6 +30,9 @@ func TestMain(m *testing.M) {
 
 func helperProcess() int {
 	args := os.Args[1:]
+	if os.Getenv("RUNNER_TEST_CODEX") == "1" {
+		return codexHelperProcess(args)
+	}
 	if len(args) != 0 && args[0] == "frontend-helper" {
 		values := map[string]string{}
 		for _, key := range []string{"port", "PORT", "VUE_APP_BASE_API_TARGET", "FRONTEND_ONLY", "BACKEND_ONLY"} {
@@ -48,6 +52,7 @@ func helperProcess() int {
 		return 0
 	}
 	if len(args) != 0 && args[0] == "build-helper" {
+		recordRecoveryStage("build", args[1:])
 		data, _ := json.Marshal(args[1:])
 		_ = os.WriteFile(os.Getenv("RUNNER_TEST_BUILD_ARGS"), data, 0600)
 		switch os.Getenv("RUNNER_TEST_BUILD") {
@@ -62,6 +67,9 @@ func helperProcess() int {
 			}
 			return 0
 		}
+		if slices.Contains(args, "clean") {
+			_ = os.Remove(os.Getenv("RUNNER_TEST_STALE_RESOURCE"))
+		}
 		if err := writeExecutableJar(os.Getenv("RUNNER_TEST_JAR")); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 9
@@ -69,6 +77,26 @@ func helperProcess() int {
 		return 0
 	}
 	if len(args) == 0 || args[0] != "child-service" {
+		if len(args) == 0 || args[0] != "frontend-helper" {
+			recordRecoveryStage("start", args)
+			failure := os.Getenv("RUNNER_TEST_APP_ERROR")
+			if stale := os.Getenv("RUNNER_TEST_STALE_RESOURCE"); stale != "" && exists(stale) {
+				failure = "mapper"
+			}
+			if failure != "" {
+				switch failure {
+				case "mapper":
+					fmt.Fprintln(os.Stderr, "Error parsing Mapper XML. Failed to parse mapping resource: mapper/StaleMapper.xml")
+					fmt.Fprintln(os.Stderr, "Caused by: java.lang.ClassNotFoundException: Cannot find class: sample.RemovedEntity")
+				case "database":
+					fmt.Fprintln(os.Stderr, "Caused by: java.sql.SQLNonTransientConnectionException: Connection refused")
+				case "initialization":
+					fmt.Fprintln(os.Stderr, "Error parsing Mapper XML")
+					fmt.Fprintln(os.Stderr, "Caused by: java.lang.NoClassDefFoundError: Could not initialize class sample.Entity")
+				}
+				return 13
+			}
+		}
 		if len(args) == 0 || args[0] != "frontend-helper" {
 			fmt.Println("backend fixture ready")
 		}
@@ -195,7 +223,7 @@ func TestMavenBuildsReactorThenRunsCurrentJar(t *testing.T) {
 		}
 	}
 	joined := strings.Join(build, " ")
-	if !strings.Contains(joined, "-pl app -am package") || strings.Contains(joined, "install") || strings.Contains(joined, "clean") {
+	if !strings.Contains(joined, "-pl app -am clean package") || strings.Contains(joined, "install") || strings.Count(joined, "clean") != 1 {
 		t.Fatalf("wrong reactor build: %v", build)
 	}
 	want := []string{"-Xmx128m", "-Dserver.port=" + strconv.Itoa(p.Port), "-Dapplication.config.path=" + p.ConfigFile, "-jar", p.Environment["RUNNER_TEST_JAR"], "--example=value with spaces"}

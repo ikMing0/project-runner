@@ -18,6 +18,10 @@ export function DetectProject(arg1) {
   return window['go']['main']['App']['DetectProject'](arg1);
 }
 
+export function GetCodexOptions(arg1) {
+  return window['go']['main']['App']['GetCodexOptions'](arg1);
+}
+
 export function GetLogs(arg1) {
   return window['go']['main']['App']['GetLogs'](arg1);
 }
@@ -40,6 +44,10 @@ export function ListProjects() {
 
 export function NewTerminal(arg1, arg2, arg3) {
   return window['go']['main']['App']['NewTerminal'](arg1, arg2, arg3);
+}
+
+export function OpenCodexAnalysis(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['OpenCodexAnalysis'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function PickConfigFile() {

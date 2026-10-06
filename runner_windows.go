@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 	"unsafe"
@@ -31,6 +32,7 @@ type run struct {
 	mu             sync.Mutex
 	temporary      []string
 	buildDirectory string
+	stage          atomic.Uint64
 }
 
 var errRunCancelled = errors.New("启动已取消")
@@ -98,7 +100,7 @@ func (a *App) startProject(id string, clean bool) error {
 	} else if plan.Build != nil {
 		state = "building"
 	}
-	status := Status{ID: id, State: state, StartedAt: started.UnixMilli()}
+	status := Status{ID: id, State: state, StartedAt: started.UnixMilli(), Attempt: 1}
 	a.statuses[id] = status
 	a.mu.Unlock()
 	a.emitStatus(status)
@@ -124,57 +126,109 @@ func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
 				err = plan.Cache.invalidate()
 			}
 			if plan.Cache.cleanRequired {
-				prepared := *build
-				prepared.Args = append([]string{}, build.Args...)
-				for i := len(prepared.Args) - 1; i >= 0; i-- {
-					if prepared.Args[i] == "package" {
-						prepared.Args = append(append(prepared.Args[:i:i], "clean"), prepared.Args[i:]...)
-						break
-					}
-				}
+				prepared := mavenCleanCommand(*build)
 				build = &prepared
 			}
 		}
 	}
-	if err == nil && build != nil {
-		phase = "构建"
-		a.appendLog(id, "system", "构建当前工作树及依赖模块: "+plan.BuildDirectory)
-		cmd, err = a.executeStage(id, p, r, *build, "building")
-	}
-	if err == nil {
-		r.mu.Lock()
-		cancelled := r.stopping
-		r.mu.Unlock()
-		if cancelled {
+	for attempt := 1; err == nil && attempt <= 2; attempt++ {
+		if build != nil {
+			phase = "构建"
+			a.appendLog(id, "system", "构建当前工作树及依赖模块: "+plan.BuildDirectory)
+			cmd, err = a.executeStage(id, p, r, *build, "building")
+		}
+		if err == nil && r.cancelled() {
 			err = errRunCancelled
 		}
-	}
-	if err == nil {
-		phase = "启动"
-		var spec commandSpec
-		spec, err = plan.Next()
-		if err == nil {
-			if build != nil {
-				if plan.Cache != nil {
-					if cacheErr := plan.Cache.record(); cacheErr != nil {
-						a.appendLog(id, "system", "未保存构建复用记录，下一次将重新构建: "+cacheErr.Error())
-					}
-				}
-				a.appendLog(id, "system", "构建成功，启动当前工作树的产物")
-			}
-			cmd, err = a.executeStage(id, p, r, spec, "starting")
+		if err != nil {
+			break
 		}
+		phase = "启动"
+		spec, nextErr := plan.Next()
+		err = nextErr
+		if err != nil {
+			break
+		}
+		if build != nil {
+			if plan.Cache != nil {
+				if cacheErr := plan.Cache.record(); cacheErr != nil {
+					a.appendLog(id, "system", "未保存构建复用记录，下一次将重新构建: "+cacheErr.Error())
+				}
+			}
+			a.appendLog(id, "system", "构建成功，启动当前工作树的产物")
+		}
+		failure := &mavenArtifactFailure{}
+		cmd, err = a.executeStage(id, p, r, spec, "starting", failure)
+		if plan.Cache == nil || err == nil || r.cancelled() {
+			break
+		}
+		a.mu.Lock()
+		wasReady := a.statuses[id].StartupDurationMs != nil
+		a.mu.Unlock()
+		reason := failure.reason()
+		if wasReady || reason == "" {
+			break
+		}
+		// Even a clean package can be invalid at runtime. Never retain a marker
+		// for a known-bad artifact; ordinary runtime/config failures keep theirs.
+		if cacheErr := plan.Cache.invalidate(); cacheErr != nil {
+			a.appendLog(id, "system", "无法撤销异常产物的复用记录: "+cacheErr.Error())
+			break
+		}
+		a.appendLog(id, "system", "本次启动产物异常，已撤销复用记录: "+reason)
+		if attempt == 2 || mavenCommandIsClean(build) {
+			a.appendLog(id, "system", "清理构建后的产物仍无法启动，停止自动恢复，请查看日志或使用 Codex 分析")
+			break
+		}
+		a.beginMavenRecovery(id)
+		a.appendLog(id, "system", "首次启动失败，开始自动恢复（最多一次）：清理重建后再次启动后端")
+		phase = "恢复检查"
+		waitForPortRelease(p.Port)
+		if r.cancelled() {
+			err = errRunCancelled
+			break
+		}
+		if err = checkPortAvailable(p.Port); err != nil {
+			break
+		}
+		if err = checkMavenArtifactUnlocked(plan.Cache.root, plan.Cache.module); err != nil {
+			break
+		}
+		// Edits between attempts must be compared with the recovery build's
+		// inputs, not those of the original reused/incremental artifact.
+		plan.Cache.inputs, _ = plan.Cache.fingerprint()
+		prepared := mavenCleanCommand(*plan.Build)
+		build = &prepared
 	}
 	a.finishRun(id, p, r, cmd, phase, err)
 }
 
-func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state string) (*exec.Cmd, error) {
+func (r *run) cancelled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopping
+}
+
+func (a *App) beginMavenRecovery(id string) {
+	a.mu.Lock()
+	status := a.statuses[id]
+	status.State, status.PID, status.Attempt, status.Recovery = "building", 0, 2, "building"
+	status.StartupDurationMs = nil
+	a.statuses[id] = status
+	a.mu.Unlock()
+	a.emitStatus(status)
+}
+
+func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state string, failure ...*mavenArtifactFailure) (*exec.Cmd, error) {
 	cmd, err := managedCommand(spec)
 	if err != nil {
 		return nil, err
 	}
 	stdout := &logWriter{app: a, id: id, source: "stdout"}
 	stderr := &logWriter{app: a, id: id, source: "stderr"}
+	if len(failure) > 0 {
+		stdout.observe, stderr.observe = failure[0].observe, failure[0].observe
+	}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	r.mu.Lock()
 	if r.stopping {
@@ -199,10 +253,16 @@ func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state
 		return cmd, fmt.Errorf("无法管理子进程: %w", assignErr)
 	}
 	r.cmd = cmd
+	generation := r.stage.Add(1)
 	r.mu.Unlock()
+	stageDone := make(chan struct{})
+	defer func() { r.stage.Add(1); close(stageDone) }()
 	a.mu.Lock()
 	status := a.statuses[id]
 	status.State, status.PID = state, cmd.Process.Pid
+	if status.Recovery == "building" && state == "starting" {
+		status.Recovery = "starting"
+	}
 	a.statuses[id] = status
 	a.mu.Unlock()
 	a.emitStatus(status)
@@ -213,9 +273,9 @@ func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state
 	a.appendLog(id, "system", fmt.Sprintf("%s %s（PID %d，端口 %d）", label, p.Name, cmd.Process.Pid, p.Port))
 	if state == "starting" {
 		if p.Kind == "node" && p.PortMode == "none" {
-			a.markRunning(id, r)
+			a.markRunningStage(id, r, generation)
 		} else {
-			go a.waitForReady(id, p.Port, r)
+			go a.waitForReady(id, p.Port, r, stageDone, generation)
 		}
 	}
 	err = cmd.Wait()
@@ -256,6 +316,14 @@ func (a *App) finishRun(id string, p Project, r *run, cmd *exec.Cmd, phase strin
 	a.mu.Lock()
 	previous := a.statuses[id]
 	status.StartedAt, status.StartupDurationMs = previous.StartedAt, previous.StartupDurationMs
+	status.Attempt, status.Recovery = previous.Attempt, previous.Recovery
+	if status.Recovery != "" && status.Recovery != "recovered" {
+		if requested {
+			status.Recovery = "cancelled"
+		} else {
+			status.Recovery = "failed"
+		}
+	}
 	a.statuses[id] = status
 	// Close done while holding the map lock: a replacement run cannot publish
 	// its initial status before the old run's final status has been emitted.
@@ -317,7 +385,7 @@ func newJob() (windows.Handle, error) {
 	return job, nil
 }
 
-func (a *App) waitForReady(id string, port int, r *run) {
+func (a *App) waitForReady(id string, port int, r *run, stageDone <-chan struct{}, generation uint64) {
 	deadline := time.NewTimer(90 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(350 * time.Millisecond)
@@ -325,6 +393,8 @@ func (a *App) waitForReady(id string, port int, r *run) {
 	for {
 		select {
 		case <-r.done:
+			return
+		case <-stageDone:
 			return
 		case <-deadline.C:
 			return
@@ -334,25 +404,36 @@ func (a *App) waitForReady(id string, port int, r *run) {
 				continue
 			}
 			_ = conn.Close()
-			a.markRunning(id, r)
+			a.markRunningStage(id, r, generation)
 			return
 		}
 	}
 }
 
 func (a *App) markRunning(id string, r *run) {
+	a.markRunningStage(id, r, r.stage.Load())
+}
+
+func (a *App) markRunningStage(id string, r *run, generation uint64) {
 	a.mu.Lock()
 	status := a.statuses[id]
-	if a.runs[id] != r || status.State != "starting" {
+	if a.runs[id] != r || status.State != "starting" || r.stage.Load() != generation {
 		a.mu.Unlock()
 		return
 	}
 	duration := time.Since(r.started).Milliseconds()
 	status.State = "running"
 	status.StartupDurationMs = &duration
+	recovered := status.Recovery == "starting"
+	if recovered {
+		status.Recovery = "recovered"
+	}
 	a.statuses[id] = status
 	a.mu.Unlock()
 	a.emitStatus(status)
+	if recovered {
+		a.appendLog(id, "system", "清理重建后启动成功，已自动恢复；首次失败日志已保留")
+	}
 }
 
 // os/exec owns the copying goroutines and drains them before Wait returns.
@@ -361,6 +442,7 @@ type logWriter struct {
 	app        *App
 	id, source string
 	pending    []byte
+	observe    func(string)
 }
 
 func (w *logWriter) Write(data []byte) (int, error) {
@@ -386,7 +468,11 @@ func (w *logWriter) line(line []byte) {
 			line = decoded
 		}
 	}
-	w.app.appendLog(w.id, w.source, string(line))
+	text := string(line)
+	if w.observe != nil {
+		w.observe(text)
+	}
+	w.app.appendLog(w.id, w.source, text)
 }
 
 func (w *logWriter) flush() {
@@ -399,6 +485,7 @@ func (w *logWriter) flush() {
 func (a *App) appendLog(id, source, message string) {
 	line := LogLine{Time: time.Now().Format("15:04:05"), Source: source, Level: classifyLogLevel(source, message), Text: message}
 	a.mu.Lock()
+	line.Attempt = a.statuses[id].Attempt
 	a.history[id] = append(a.history[id], line)
 	if len(a.history[id]) > 2500 {
 		a.history[id] = append([]LogLine{}, a.history[id][500:]...)

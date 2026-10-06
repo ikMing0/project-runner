@@ -50,10 +50,11 @@ type Detection struct {
 }
 
 type LogLine struct {
-	Time   string `json:"time"`
-	Source string `json:"source"`
-	Level  string `json:"level"`
-	Text   string `json:"text"`
+	Time    string `json:"time"`
+	Source  string `json:"source"`
+	Level   string `json:"level"`
+	Text    string `json:"text"`
+	Attempt int    `json:"attempt,omitempty"`
 }
 
 type Status struct {
@@ -64,6 +65,8 @@ type Status struct {
 	Error             string `json:"error"`
 	StartedAt         int64  `json:"startedAt,omitempty"`
 	StartupDurationMs *int64 `json:"startupDurationMs,omitempty"`
+	Attempt           int    `json:"attempt,omitempty"`
+	Recovery          string `json:"recovery,omitempty"`
 }
 
 type App struct {

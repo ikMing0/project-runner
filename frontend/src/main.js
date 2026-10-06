@@ -1,12 +1,15 @@
 import './style.css';
-import { isNewRun, actionableError, serviceIDs, activeState, groupState } from './run-state.mjs';
+import { isNewRun, actionableError, serviceIDs, activeState, groupState, currentAttemptLog, recoveryText } from './run-state.mjs';
 import { TerminalConsole } from './terminal-console.mjs';
 import { FrontendDirectoryLink } from './frontend-directory.mjs';
 import { moveProject, ProjectOrderController } from './project-order.mjs';
+import { codexSelection, codexEfforts, codexEffortLabels } from './codex-selection.mjs';
+import { parseAnsiLog, renderAnsiLog } from './ansi-log.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, ReorderProjects, GetStatuses, GetLogs,
   PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
   NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal,
+  GetCodexOptions, OpenCodexAnalysis,
 } from '../wailsjs/go/main/App';
 import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
 
@@ -76,7 +79,7 @@ app.innerHTML = `
           <section class="logs panel">
             <div id="service-bar" class="service-bar hidden"><div id="service-tabs" class="service-tabs" role="tablist" aria-label="服务日志"></div><div class="service-actions"><button id="service-start" class="button small">启动当前服务</button><button id="service-stop" class="button small danger">停止当前服务</button></div></div>
             <div class="log-toolbar"><div class="output-heading"><h2 id="output-title">运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="open-browser" class="button small">打开页面</button></div></div>
-            <div class="log-filterbar"><div class="log-view-controls"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><button id="terminal-toggle" class="terminal-toggle" type="button" aria-controls="terminal-pane" aria-pressed="false"><span aria-hidden="true">&gt;_</span> 终端</button></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span><span id="terminal-shortcuts" class="hidden">Ctrl+C 中断 · Ctrl+V 粘贴</span></div>
+            <div class="log-filterbar"><div class="log-view-controls"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><button id="terminal-toggle" class="terminal-toggle" type="button" aria-controls="terminal-pane" aria-pressed="false"><span aria-hidden="true">&gt;_</span> 终端</button><div class="codex-actions"><button id="codex-analyze" class="terminal-toggle" type="button">Codex 分析</button><button id="codex-settings" class="terminal-toggle" type="button" aria-label="Codex 分析设置" title="模型与推理强度">▾</button></div></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span><span id="terminal-shortcuts" class="hidden">Ctrl+C 中断 · Ctrl+V 粘贴</span></div>
             <div id="log-output" class="log-output"><div class="log-placeholder">启动项目后，日志将在这里实时显示。</div></div>
             <div id="terminal-pane" class="terminal-pane hidden"><div class="terminal-tabbar"><div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端标签页"></div><button id="terminal-new" class="button small" type="button">＋ 新标签页</button></div><div id="terminal-workspace" class="terminal-workspace"></div></div>
           </section>
@@ -85,6 +88,7 @@ app.innerHTML = `
     </main>
   </div>
   <dialog id="reuse-dialog" class="reuse-dialog" aria-labelledby="reuse-title"><div class="reuse-dialog-head"><div><h2 id="reuse-title">复用配置</h2><p>选择已保存项目中的路径</p></div><button id="reuse-close" class="button small" type="button" aria-label="关闭">✕</button></div><div id="reuse-options" class="reuse-options"></div></dialog>
+  <dialog id="codex-dialog" class="reuse-dialog" aria-labelledby="codex-title"><div class="reuse-dialog-head"><div><h2 id="codex-title">Codex 分析设置</h2><p>定位启动 / 编译错误，只读分析，输出简短建议</p></div><button id="codex-close" class="button small" type="button" aria-label="关闭 Codex 设置">✕</button></div><div class="codex-form"><label class="field"><span>模型（留空自动选择 CLI 可用模型）</span><input id="codex-model" list="codex-model-options" placeholder="自动选择 CLI 可用模型"><datalist id="codex-model-options"></datalist></label><label class="field"><span>推理强度</span><select id="codex-effort"></select></label><p id="codex-cli-hint" class="field-hint"></p><p class="field-hint">默认低强度，先看异常链，必要时查相关源码。每次分析最多带入最近 400 行日志；可在终端继续追问。</p><button id="codex-save" class="button primary" type="button">保存设置</button></div></dialog>
   <div id="toast" class="toast hidden"></div>
 `;
 
@@ -127,6 +131,55 @@ const storedLogHeight = Number(window.localStorage.getItem(logHeightStorageKey))
 let preferredLogHeight = Number.isFinite(storedLogHeight) && storedLogHeight >= 170 ? storedLogHeight : 320;
 let displayedLogHeight = preferredLogHeight;
 let configOpen = false;
+let codexOptions = null;
+let codexSettingsProject = null;
+
+function projectCodexSelection(projectID = draft?.id) {
+  try { return codexSelection(JSON.parse(window.localStorage.getItem(`project-runner-codex-${projectID}`))); }
+  catch { return codexSelection(null); }
+}
+
+function renderCodexHint() {
+  const selection = projectCodexSelection();
+  $('codex-analyze').title = `只读分析当前${logSide === 'frontend' ? '前端' : '后端'}日志 · ${selection.model || '自动选择'} · ${selection.effort}`;
+}
+
+function renderCodexEfforts() {
+  const previous = $('codex-effort').value;
+  const levels = codexEfforts(codexOptions, $('codex-model').value.trim());
+  $('codex-effort').replaceChildren(...levels.map(level => new Option(codexEffortLabels[level], level)));
+  $('codex-effort').value = levels.includes(previous) ? previous : levels.includes('low') ? 'low' : levels[0];
+}
+
+async function openCodexSettings() {
+  try {
+    if (!draft?.id || dirty) await saveCurrent();
+    const context = terminalContext();
+    const options = await GetCodexOptions(context.serviceId);
+    if (draft?.id !== context.projectId || logServiceID() !== context.serviceId) return;
+    codexOptions = options;
+    codexSettingsProject = context.projectId;
+    const selection = projectCodexSelection();
+    $('codex-model').value = selection.model;
+    $('codex-model').placeholder = `自动选择${options.defaultModel ? `（${options.defaultModel}）` : ''}`;
+    $('codex-model-options').replaceChildren(...(options.models || []).map(model => new Option(model.name || model.id, model.id)));
+    renderCodexEfforts();
+    if (codexEfforts(options, selection.model).includes(selection.effort)) $('codex-effort').value = selection.effort;
+    const modelHint = options.configuredModel && options.defaultModel && options.configuredModel !== options.defaultModel
+      ? `。诊断默认使用 ${options.defaultModel}（本机配置：${options.configuredModel}）` : '';
+    $('codex-cli-hint').textContent = options.executable
+      ? `CLI：${options.executable}${modelHint}${options.catalogError ? `。${options.catalogError}` : ''}`
+      : '未找到 Codex CLI，请将 codex.exe / codex.cmd 加入 PATH 并重开运行台';
+    $('codex-dialog').showModal();
+  } catch (error) { notify(error, true); }
+}
+
+function analyzeWithCodex() {
+  return terminalUI.newTab(context => {
+    const selection = projectCodexSelection(context.projectId);
+    return OpenCodexAnalysis(context.serviceId, 100, 30, selection.model, selection.effort);
+  }).catch(error => notify(error, true));
+}
 
 function logHeightBounds() {
   const content = $('content');
@@ -207,7 +260,7 @@ function formatStartupDuration(ms) {
 }
 function startupText(status) {
   if (['checking', 'building', 'starting'].includes(status?.state) && status.startedAt) {
-    return `${stateText(status.state)} · ${formatStartupDuration(Date.now() - status.startedAt)}`;
+    return `${recoveryText(status) || stateText(status.state)} · ${formatStartupDuration(Date.now() - status.startedAt)}`;
   }
   if (status?.startupDurationMs != null) {
     return `${status.state === 'running' ? '启动耗时' : '上次启动'} · ${formatStartupDuration(status.startupDurationMs)}`;
@@ -450,6 +503,7 @@ function renderHeader() {
   const service = serviceProject();
   const status = statuses.get(service.id) || { state: 'stopped' };
   $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(service) ? `端口 ${service.port}` : '未指定端口'}`;
+  if (recoveryText(status)) $('log-summary').textContent += ` · ${recoveryText(status)}`;
   $('service-bar').classList.toggle('hidden', !p.frontend);
   $('service-tabs').replaceChildren();
   if (p.frontend) {
@@ -458,7 +512,7 @@ function renderHeader() {
       tab.className = `service-tab ${logSide === side ? 'selected' : ''}`;
       tab.setAttribute('role', 'tab');
       tab.setAttribute('aria-selected', String(logSide === side));
-      tab.textContent = `${label} · ${stateText(stateFor(id))}${projectProblems.get(id) === 'error' ? ' · 错误' : ''}`;
+      tab.textContent = `${label} · ${recoveryText(statuses.get(id)) || stateText(stateFor(id))}${projectProblems.get(id) === 'error' ? ' · 错误' : ''}`;
       tab.onclick = () => selectLogSide(side).catch((error) => notify(error, true));
       $('service-tabs').append(tab);
     }
@@ -466,6 +520,7 @@ function renderHeader() {
   $('service-start').disabled = pending || isActive(service.id);
   $('service-stop').disabled = pending || !isActive(service.id);
   terminalUI.setContext(terminalContext());
+  renderCodexHint();
 }
 
 function renderProxyHint() {
@@ -489,25 +544,40 @@ function resetFrontendDirectoryLink() {
   renderFrontendDirectoryHint();
 }
 
+const logDisplayCache = new WeakMap();
+function logDisplay(line) {
+  if (!logDisplayCache.has(line)) logDisplayCache.set(line, parseAnsiLog(line.text));
+  return logDisplayCache.get(line);
+}
 function logLevel(line) { return line.level || (line.source === 'system' ? 'system' : 'info'); }
 function matchesLog(line, query) {
   const level = logLevel(line);
   if (logMode === 'error' && level !== 'error') return false;
   if (logMode === 'focus' && !['error', 'warn', 'system'].includes(level)) return false;
-  return !query || line.text.toLowerCase().includes(query);
+  return !query || logDisplay(line).text.toLowerCase().includes(query);
 }
 
 function renderIssue() {
   const banner = $('issue-banner');
-  const errors = logs.filter((line) => logLevel(line) === 'error');
-  const warnings = logs.filter((line) => logLevel(line) === 'warn');
-  const latest = errors.find((line) => actionableError(line.text)) || errors[0] || warnings[0];
-  banner.classList.toggle('hidden', !latest);
+  const status = statuses.get(logServiceID());
+  const currentLogs = logs.filter((line) => currentAttemptLog(line, status));
+  const errors = currentLogs.filter((line) => logLevel(line) === 'error');
+  const warnings = currentLogs.filter((line) => logLevel(line) === 'warn');
+  const latest = errors.find((line) => actionableError(logDisplay(line).text)) || errors[0] || warnings[0];
+  const recovered = !latest && status?.recovery === 'recovered';
+  banner.classList.toggle('recovered', recovered);
+  banner.classList.toggle('hidden', !latest && !recovered);
+  banner.classList.toggle('warning', !!latest && !errors.length);
+  if (recovered) {
+    $('issue-title').textContent = '已自动恢复';
+    $('issue-message').textContent = '首次启动出现产物异常，清理重建后启动成功；两次尝试的日志均已保留。';
+    $('issue-message').title = $('issue-message').textContent;
+    return;
+  }
   if (!latest) return;
-  banner.classList.toggle('warning', !errors.length);
   $('issue-title').textContent = errors.length ? `检测到错误记录 ${errors.length} 行` : `检测到警告 ${warnings.length} 行`;
-  $('issue-message').textContent = latest.text.trim();
-  $('issue-message').title = latest.text.trim();
+  $('issue-message').textContent = logDisplay(latest).text.trim();
+  $('issue-message').title = logDisplay(latest).text.trim();
 }
 
 function renderLogCounts() {
@@ -525,7 +595,8 @@ function renderLogCounts() {
 function appendLogRow(line, output) {
   const level = logLevel(line);
   // Spring prefixes each repeat with a new timestamp; ignore that prefix when grouping.
-  const normalized = line.text.trim().replace(/^\d{4}-\d{2}-\d{2}T\S+\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+\d+\s+---\s*/, '');
+  const display = logDisplay(line);
+  const normalized = display.text.trim().replace(/^\d{4}-\d{2}-\d{2}T\S+\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+\d+\s+---\s*/, '');
   const key = `${level}\u0000${normalized}`;
   if (logMode === 'focus' && groupedLogRows.has(key)) {
     const grouped = groupedLogRows.get(key);
@@ -543,7 +614,7 @@ function appendLogRow(line, output) {
   time.textContent = line.time;
   const message = document.createElement('span');
   message.className = 'log-message';
-  message.textContent = line.text;
+  renderAnsiLog(message, display.runs);
   row.append(time, message);
   if (logMode === 'focus') {
     const badge = document.createElement('span');
@@ -760,6 +831,18 @@ function bind() {
   $('reuse-java').onclick = () => openReuseDialog('javaHome');
   $('reuse-tool').onclick = () => openReuseDialog('toolPath');
   $('reuse-close').onclick = () => $('reuse-dialog').close();
+  $('codex-analyze').onclick = analyzeWithCodex;
+  $('codex-settings').onclick = openCodexSettings;
+  $('codex-close').onclick = () => $('codex-dialog').close();
+  $('codex-model').addEventListener('input', renderCodexEfforts);
+  $('codex-save').onclick = () => {
+    try {
+      window.localStorage.setItem(`project-runner-codex-${codexSettingsProject}`, JSON.stringify(codexSelection({ model: $('codex-model').value, effort: $('codex-effort').value })));
+      $('codex-dialog').close();
+      renderCodexHint();
+      notify('Codex 分析设置已保存');
+    } catch (error) { notify(error, true); }
+  };
   $('browse-config').onclick = async () => { try { const path = await PickConfigFile(); if (path) { $('config-file').value = path; dirty = true; } } catch (error) { notify(error, true); } };
   $('browse-config-dir').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('config-file').value = path; dirty = true; } } catch (error) { notify(error, true); } };
   $('directory').addEventListener('change', detect);
@@ -803,6 +886,10 @@ function bind() {
   document.querySelectorAll('.log-filter').forEach((button) => { button.onclick = () => { logMode = button.dataset.logFilter; terminalUI.showLogs(); }; });
   $('issue-view').onclick = () => { logMode = 'focus'; terminalUI.showLogs(); document.querySelector('.logs').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   EventsOn('project:status', (status) => {
+    if ((status.attempt || 1) > (statuses.get(status.id)?.attempt || 1)) {
+      projectProblems.delete(status.id);
+      alertedRuns.delete(status.id);
+    }
     if (isNewRun(statuses.get(status.id), status)) {
       alertedRuns.delete(status.id);
       projectProblems.delete(status.id);
@@ -811,13 +898,15 @@ function bind() {
     statuses.set(status.id, status);
     renderList();
     if (draft && serviceIDs(draft).includes(status.id)) { renderHeader(); if (!dirty) renderForm(); }
+    if (logServiceID() === status.id) renderIssue();
   });
   EventsOn('project:log', ({ id, line }) => {
     const level = logLevel(line);
-    if (level === 'error' || (level === 'warn' && !projectProblems.has(id))) {
+    const currentAttempt = currentAttemptLog(line, statuses.get(id));
+    if (currentAttempt && (level === 'error' || (level === 'warn' && !projectProblems.has(id)))) {
       if (projectProblems.get(id) !== 'error') { projectProblems.set(id, level); renderList(); if (draft && serviceIDs(draft).includes(id)) renderHeader(); }
     }
-    if (level === 'error' && !alertedRuns.has(id)) {
+    if (currentAttempt && level === 'error' && !alertedRuns.has(id)) {
       alertedRuns.add(id);
       const parent = projects.find((project) => serviceIDs(project).includes(id));
       const projectName = parent ? `${parent.name}${id.endsWith(':frontend') ? ' · 前端' : ' · 后端'}` : '项目';

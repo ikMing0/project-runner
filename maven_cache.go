@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const mavenCacheVersion = 1
+const mavenCacheVersion = 2
 
 type mavenBuildRecord struct {
 	Version     int      `json:"version"`
@@ -45,21 +45,26 @@ func newMavenBuildCache(root, module string, spec commandSpec, force bool) *mave
 // A JAR is reusable only when a successful build recorded these exact inputs
 // and its content. Existing artifacts from IDEA or a failed build are untrusted.
 func (c *mavenBuildCache) needsBuild() (bool, string) {
+	c.cleanRequired = false
 	inputs, err := c.fingerprint()
 	if err != nil {
-		return true, "无法完整核验构建输入，执行构建"
+		c.cleanRequired = true
+		return true, "无法完整核验构建输入，清理后构建"
 	}
 	c.inputs = inputs
 	if c.force {
+		c.cleanRequired = true
 		return true, "手动重新构建，清理后构建"
 	}
 	data, err := os.ReadFile(c.path)
 	if err != nil {
-		return true, "尚无成功构建记录，执行首次构建"
+		c.cleanRequired = true
+		return true, "尚无可信构建记录，首次清理构建"
 	}
 	var record mavenBuildRecord
 	if json.Unmarshal(data, &record) != nil || record.Version != mavenCacheVersion || record.Root != c.root || record.Module != c.module {
-		return true, "构建记录无效，重新构建"
+		c.cleanRequired = true
+		return true, "构建记录无效或版本升级，清理后重新构建"
 	}
 	if record.Inputs != inputs {
 		current := map[string]bool{}
@@ -76,11 +81,13 @@ func (c *mavenBuildCache) needsBuild() (bool, string) {
 	}
 	jar, err := mavenArtifact(c.root, c.module)
 	if err != nil {
-		return true, "启动 JAR 缺失或无效，重新构建"
+		c.cleanRequired = true
+		return true, "启动 JAR 缺失或无效，清理后重新构建"
 	}
 	digest, err := fileDigest(jar)
 	if err != nil || record.Jar != jar || record.JarHash != digest {
-		return true, "启动 JAR 被替换或修改，重新构建"
+		c.cleanRequired = true
+		return true, "启动 JAR 被替换或修改，清理后重新构建"
 	}
 	return false, "构建输入未变化，复用当前工作树 JAR，跳过 Maven 构建"
 }

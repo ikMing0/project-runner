@@ -10,6 +10,8 @@ export function DetectFrontend(arg1:string):Promise<main.FrontendConfig>;
 
 export function DetectProject(arg1:string):Promise<main.Detection>;
 
+export function GetCodexOptions(arg1:string):Promise<main.CodexOptions>;
+
 export function GetLogs(arg1:string):Promise<Array<main.LogLine>>;
 
 export function GetStatuses():Promise<Array<main.Status>>;
@@ -21,6 +23,8 @@ export function GetTerminals():Promise<Array<main.TerminalInfo>>;
 export function ListProjects():Promise<Array<main.Project>>;
 
 export function NewTerminal(arg1:string,arg2:number,arg3:number):Promise<main.TerminalInfo>;
+
+export function OpenCodexAnalysis(arg1:string,arg2:number,arg3:number,arg4:string,arg5:string):Promise<main.TerminalInfo>;
 
 export function PickConfigFile():Promise<string>;
 

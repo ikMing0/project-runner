@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isNewRun, actionableError, serviceIDs, groupState, activeState } from './run-state.mjs';
+import { isNewRun, actionableError, serviceIDs, groupState, activeState, currentAttemptLog, recoveryText } from './run-state.mjs';
 
 test('switching from build to application preserves build diagnostics', () => {
 	const checking = {state:'checking', startedAt:100};
@@ -60,4 +60,18 @@ test('existing standalone configs retain their single service state', () => {
   assert.deepEqual(serviceIDs(project), ['node']);
   assert.equal(groupState(project, new Map([['node', { state: 'running' }]])), 'running');
   assert.equal(groupState(project, new Map([['node', { state: 'failed' }]])), 'failed');
+});
+
+test('automatic recovery preserves both attempts while problems belong to the current attempt', () => {
+  const first = {state:'starting',startedAt:100,attempt:1};
+  const recovery = {state:'building',startedAt:100,attempt:2,recovery:'building'};
+  assert.equal(isNewRun(first,recovery), false);
+  const logs = [{text:'old failure',attempt:1},{text:'new startup',attempt:2}];
+  assert.deepEqual(logs.filter(line=>currentAttemptLog(line,recovery)), [logs[1]]);
+  assert.equal(currentAttemptLog({text:'legacy failure'},recovery), false);
+  assert.equal(currentAttemptLog({},first), true);
+  assert.equal(recoveryText(recovery), '自动清理重建中');
+  assert.equal(recoveryText({recovery:'recovered'}), '已自动恢复');
+  assert.equal(recoveryText({recovery:'failed'}), '自动恢复未成功');
+  assert.equal(recoveryText({recovery:'cancelled'}), '自动恢复已取消');
 });

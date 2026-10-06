@@ -5,7 +5,7 @@ import "strings"
 // classifyLogLevel uses the message content because Maven, Java and Node often
 // write ordinary information to stderr. Source alone is not a severity level.
 func classifyLogLevel(source, message string) string {
-	line := strings.TrimSpace(message)
+	line := strings.TrimSpace(plainLogText(message))
 	upper := strings.ToUpper(line)
 	if source == "system" {
 		if strings.Contains(line, "失败") || strings.HasPrefix(line, "Error:") {
@@ -24,7 +24,8 @@ func classifyLogLevel(source, message string) string {
 		strings.Contains(upper, " ERROR ") || strings.HasPrefix(upper, "ERROR:") ||
 		strings.HasPrefix(upper, "ERROR ") || strings.HasPrefix(upper, "NPM ERR!") ||
 		strings.HasPrefix(upper, "NPM ERROR") || strings.HasPrefix(upper, "FAILURE:") ||
-		strings.HasPrefix(upper, "FATAL ") ||
+		strings.HasPrefix(upper, "FATAL ") || strings.HasPrefix(upper, "AGGREGATEERROR") ||
+		strings.Contains(upper, "HTTP PROXY ERROR:") ||
 		strings.Contains(line, "不是内部或外部命令") ||
 		strings.Contains(upper, "IS NOT RECOGNIZED AS AN INTERNAL OR EXTERNAL COMMAND") ||
 		strings.Contains(line, "系统找不到指定的路径") || strings.Contains(line, "系统找不到指定的文件") ||

@@ -73,13 +73,13 @@ export class TerminalConsole {
     this.focus();
   }
 
-  async newTab() {
+  async newTab(create = context => this.api.NewTerminal(context.serviceId, 80, 24)) {
     if (this.creating) return;
     this.creating = true;
     this.render();
     try {
       const context = await this.prepare();
-      const info = await this.api.NewTerminal(context.serviceId, 80, 24);
+      const info = await create(context);
       await this.addEntry(info);
       const view = this.view(context.projectId);
       view.mode = 'terminal';
@@ -220,6 +220,8 @@ export class TerminalConsole {
     $('terminal-toggle').setAttribute('aria-pressed', String(visible));
     $('terminal-toggle').disabled = this.creating;
     $('terminal-new').disabled = this.creating;
+    const codexButton = $('codex-analyze');
+    if (codexButton) codexButton.disabled = this.creating;
     $('output-title').textContent = visible ? '终端控制台' : '运行日志';
     const active = this.entries.get(view.active);
     if (visible && active) {

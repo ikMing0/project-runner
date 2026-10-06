@@ -79,6 +79,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .issue-banner.warning { border-color: #866439; background: #423622; color: #ffe4b0; }
 .issue-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; background: #ad5060; color: white; font-weight: 800; }
 .issue-banner.warning .issue-icon { background: #a77a38; }
+.issue-banner.recovered { border-color: #397b65; background: #193c33; color: #c9f8e6; }
+.issue-banner.recovered .issue-icon { background: #348c70; }
 .issue-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .issue-copy strong { font-size: 12px; }
 .issue-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; opacity: .88; }
@@ -155,6 +157,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .terminal-toggle span { color: #8db5ef; font: 12px Consolas, monospace; }
 .terminal-toggle:hover { border-color: #5b80b2; color: #e4efff; }
 .terminal-toggle.selected { background: #254576; border-color: #5178af; color: #e1edff; }
+.codex-actions { display: inline-flex; flex: none; }
+.codex-actions #codex-analyze { border-radius: 7px 0 0 7px; }
+.codex-actions #codex-settings { border-radius: 0 7px 7px 0; padding: 7px 8px; border-left: 0; }
+.codex-form { display: flex; flex-direction: column; gap: 16px; padding: 20px 22px; }
+.codex-form p { margin: 0; line-height: 1.6; }
 #terminal-shortcuts { color: #8193ac; font-size: 11px; white-space: nowrap; }
 .terminal-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; background: #0b1422; }
 .terminal-tabbar { display: flex; align-items: center; gap: 12px; padding: 7px 12px; border-bottom: 1px solid #28374e; background: #101a2a; flex: none; }

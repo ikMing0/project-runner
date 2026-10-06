@@ -19,6 +19,11 @@ func TestClassifyLogLevel(t *testing.T) {
 		{"stderr", "'mvn' is not recognized as an internal or external command", "error"},
 		{"stderr", "系统找不到指定的路径。", "error"},
 		{"stderr", "The JAVA_HOME environment variable is not defined correctly,", "error"},
+		{"stdout", "\x1b[32m\x1b[1mVITE\x1b[22m ready\x1b[39m", "info"},
+		{"stdout", "\x1b[31mError:\x1b[39m Port 82 is already in use", "error"},
+		{"stdout", "\x1b[2m下午5:41:40\x1b[22m \x1b[31m[vite]\x1b[39m \x1b[31mhttp proxy error: /getInfo\x1b[39m", "error"},
+		{"stdout", "AggregateError [ECONNREFUSED]:", "error"},
+		{"stderr", "\x1b[33mWARNING:\x1b[0m deprecated option", "warn"},
 	}
 	for _, tc := range cases {
 		if got := classifyLogLevel(tc.source, tc.line); got != tc.want {
