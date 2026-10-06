@@ -1,8 +1,10 @@
 import './style.css';
 import { isNewRun, actionableError, serviceIDs, activeState, groupState } from './run-state.mjs';
 import { TerminalConsole } from './terminal-console.mjs';
+import { FrontendDirectoryLink } from './frontend-directory.mjs';
+import { moveProject, ProjectOrderController } from './project-order.mjs';
 import {
-  ListProjects, SaveProject, DeleteProject, GetStatuses, GetLogs,
+  ListProjects, SaveProject, DeleteProject, ReorderProjects, GetStatuses, GetLogs,
   PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
   NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal,
 } from '../wailsjs/go/main/App';
@@ -56,7 +58,7 @@ app.innerHTML = `
             <div id="frontend-section" class="frontend-section java-field">
               <div class="section-title"><div><label class="check-field"><input id="frontend-enabled" type="checkbox"><strong>启用配套前端</strong></label><p>作为一组启停，也可在日志页单独操作前端或后端</p></div><button id="detect-frontend" class="button small" type="button">识别配套前端</button></div>
               <div id="frontend-fields" class="form-grid hidden">
-                <label class="field wide"><span>前端目录（含 package.json）</span><div class="input-action"><input id="frontend-directory"><button id="browse-frontend" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
+                <label class="field wide"><span>前端目录（含 package.json）</span><div class="input-action"><input id="frontend-directory" aria-describedby="frontend-directory-hint"><button id="browse-frontend" class="button small browse-button" type="button">${browseIcon}浏览</button></div><small id="frontend-directory-hint" class="field-hint"></small></label>
                 <label class="field"><span>前端端口</span><input id="frontend-port" type="number" min="1" max="65535"></label>
                 <label class="field"><span>package.json 脚本</span><input id="frontend-script" list="frontend-script-options"><datalist id="frontend-script-options"></datalist></label>
                 <label class="field"><span>包管理器</span><select id="frontend-manager"><option value="npm">npm</option><option value="pnpm">pnpm</option><option value="yarn">yarn</option></select></label>
@@ -107,6 +109,8 @@ let statuses = new Map();
 let current = null;
 let draft = null;
 let frontendDraft = null;
+const frontendDirectoryLink = new FrontendDirectoryLink();
+const projectOrderUI = new ProjectOrderController($('project-list'), { onMove: reorderProjectList, onRelease: renderList });
 let logSide = 'backend';
 let logLoadVersion = 0;
 let logs = [];
@@ -220,11 +224,19 @@ function refreshStartupTimes() {
 
 function renderList() {
   $('project-count').textContent = String(projects.length);
+  if (projectOrderUI.isDragging()) return;
   const list = $('project-list');
   list.replaceChildren();
   for (const project of projects) {
     const item = document.createElement('div');
     item.className = `project-item ${current === project.id ? 'selected' : ''}`;
+    item.dataset.projectId = project.id;
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = 'project-drag-handle';
+    handle.title = '上下拖动排序；Alt+↑ / ↓ 调整位置';
+    handle.setAttribute('aria-label', `调整 ${project.name} 的位置`);
+    handle.innerHTML = '<svg viewBox="0 0 12 20" aria-hidden="true"><circle cx="3" cy="4" r="1.3"/><circle cx="9" cy="4" r="1.3"/><circle cx="3" cy="10" r="1.3"/><circle cx="9" cy="10" r="1.3"/><circle cx="3" cy="16" r="1.3"/><circle cx="9" cy="16" r="1.3"/></svg>';
     const select = document.createElement('button');
     select.type = 'button';
     select.className = 'project-select';
@@ -268,8 +280,23 @@ function renderList() {
     quick.setAttribute('aria-label', quick.title);
     quick.disabled = pendingProjects.has(project.id);
     quick.onclick = () => quickAction(project.id, active ? 'stop' : 'start');
-    item.append(select, quick);
+    item.append(handle, select, quick);
     list.append(item);
+  }
+}
+
+async function reorderProjectList(sourceID, targetID, position) {
+  const previous = projects;
+  const ordered = moveProject(projects, sourceID, targetID, position);
+  if (ordered.every((project, i) => project.id === projects[i].id)) return;
+  projects = ordered;
+  renderList();
+  try {
+    await ReorderProjects(ordered.map(project => project.id));
+  } catch (error) {
+    try { projects = await ListProjects(); } catch { projects = previous; }
+    renderList();
+    notify(`项目排序保存失败：${error}`, true);
   }
 }
 
@@ -278,6 +305,7 @@ async function selectProject(id) {
   current = id;
   draft = structuredClone(projects.find((p) => p.id === id));
   frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
   dirty = false;
   autoName = '';
   configOpen = false;
@@ -298,6 +326,7 @@ function readEnvironment(id) {
 
 function readForm() {
   if (!draft) return;
+  syncFrontendDirectory();
   draft.name = $('name').value.trim();
   draft.directory = $('directory').value.trim();
   draft.kind = $('kind').value;
@@ -388,6 +417,7 @@ function renderForm() {
     $(`frontend-${field}`).value = value ?? '';
   }
   $('frontend-auto-proxy').checked = f.autoProxy;
+  renderFrontendDirectoryHint();
   renderProxyHint();
   const active = p.id && groupActive(p);
   document.querySelectorAll('.settings input, .settings select, .settings textarea, .settings button').forEach((el) => { el.disabled = !!active; });
@@ -440,6 +470,23 @@ function renderHeader() {
 
 function renderProxyHint() {
   $('frontend-proxy-hint').textContent = $('frontend-auto-proxy').checked ? `${$('frontend-proxy-variable').value || 'VUE_APP_BASE_API_TARGET'} = http://localhost:${$('port').value}` : '使用前端环境变量或项目中的代理配置';
+}
+
+function renderFrontendDirectoryHint() {
+  $('frontend-directory-hint').textContent = frontendDirectoryLink.relative !== null
+    ? `跟随后端目录，保持相对位置：${frontendDirectoryLink.relative || '.'}`
+    : '可选择项目内的前端目录自动跟随，或单独指定其他目录';
+}
+
+function syncFrontendDirectory() {
+  const input = $('frontend-directory');
+  input.value = frontendDirectoryLink.resolve($('directory').value, input.value);
+  renderFrontendDirectoryHint();
+}
+
+function resetFrontendDirectoryLink() {
+  frontendDirectoryLink.reset($('directory').value, $('frontend-directory').value);
+  renderFrontendDirectoryHint();
 }
 
 function logLevel(line) { return line.level || (line.source === 'system' ? 'system' : 'info'); }
@@ -544,6 +591,7 @@ function addProject(copy = false) {
   if (dirty && !confirm('当前配置尚未保存，确定新建吗？')) return;
   draft = copy && draft ? { ...structuredClone(draft), id: '', name: `${draft.name} 副本` } : blankProject();
   frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
   logSide = 'backend';
   ++logLoadVersion;
   current = null;
@@ -561,6 +609,7 @@ async function saveCurrent() {
   const saved = await SaveProject(draft);
   draft = structuredClone(saved);
   frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
   current = saved.id;
   dirty = false;
   autoName = '';
@@ -619,7 +668,11 @@ async function quickAction(id, action) {
 
 async function detect() {
   try {
-    const detection = await DetectProject($('directory').value.trim());
+    syncFrontendDirectory();
+    const directory = $('directory').value.trim();
+    const project = draft;
+    const detection = await DetectProject(directory);
+    if (draft !== project || $('directory').value.trim() !== directory) return;
     const currentName = $('name').value.trim();
     if (detection.name && (!currentName || currentName === autoName)) {
       $('name').value = detection.name;
@@ -653,14 +706,20 @@ async function detect() {
 async function detectPairedFrontend(directory) {
   try {
     readForm();
+    const project = draft;
+    const backendDirectory = draft.directory;
+    const frontendDirectory = $('frontend-directory').value.trim();
     const detection = await DetectFrontend(directory || $('frontend-directory').value.trim() || draft.directory);
+    if (draft !== project || $('directory').value.trim() !== backendDirectory || $('frontend-directory').value.trim() !== frontendDirectory) return;
+    const details = await DetectProject(detection.directory);
+    if (draft !== project || $('directory').value.trim() !== backendDirectory || $('frontend-directory').value.trim() !== frontendDirectory) return;
     frontendDraft = { ...blankFrontend(), ...frontendDraft, ...detection,
       nodeHome: frontendDraft?.nodeHome || detection.nodeHome || '', toolPath: frontendDraft?.toolPath || detection.toolPath || '',
       port: draft.frontend?.port || detection.port,
       environment: frontendDraft?.environment || {}, appArgs: frontendDraft?.appArgs || '' };
     draft.frontend = frontendDraft;
+    frontendDirectoryLink.reset(draft.directory, frontendDraft.directory);
     dirty = true;
-    const details = await DetectProject(detection.directory);
     $('frontend-script-options').replaceChildren();
     for (const script of details.scripts || []) {
       const option = document.createElement('option'); option.value = script; $('frontend-script-options').append(option);
@@ -694,8 +753,8 @@ function bind() {
   for (const [button, input, file] of [['browse-node', 'node-home', false], ['browse-node-tool', 'node-tool', true], ['browse-frontend-node', 'frontend-node-home', false], ['browse-frontend-tool', 'frontend-tool', true]]) {
     $(button).onclick = async () => { try { const path = await (file ? PickToolFile() : PickDirectory()); if (path) { $(input).value = path; dirty = true; } } catch (error) { notify(error, true); } };
   }
-  $('detect-frontend').onclick = () => detectPairedFrontend();
-  $('browse-frontend').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('frontend-directory').value = path; dirty = true; await detectPairedFrontend(path); } } catch (error) { notify(error, true); } };
+  $('detect-frontend').onclick = () => detectPairedFrontend($('directory').value.trim());
+  $('browse-frontend').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('frontend-directory').value = path; resetFrontendDirectoryLink(); dirty = true; await detectPairedFrontend(path); } } catch (error) { notify(error, true); } };
   $('frontend-enabled').addEventListener('change', () => { try { readForm(); renderForm(); renderHeader(); renderLogs(); } catch (error) { notify(error, true); } });
   $('frontend-directory').addEventListener('change', () => detectPairedFrontend());
   $('reuse-java').onclick = () => openReuseDialog('javaHome');
@@ -706,6 +765,8 @@ function bind() {
   $('directory').addEventListener('change', detect);
   $('kind').addEventListener('change', () => { readForm(); renderForm(); renderHeader(); });
   document.querySelectorAll('.settings input, .settings select, .settings textarea').forEach((el) => {
+    if (el.id === 'directory') el.addEventListener('input', syncFrontendDirectory);
+    if (el.id === 'frontend-directory') el.addEventListener('input', resetFrontendDirectoryLink);
     el.addEventListener('input', () => { dirty = true; if (el.id === 'name') autoName = ''; if (el.id === 'name' || el.id === 'port') { try { readForm(); renderHeader(); } catch (error) { notify(error, true); } } if (['port', 'frontend-auto-proxy', 'frontend-proxy-variable'].includes(el.id)) renderProxyHint(); $('save').textContent = '保存更改'; });
   });
   $('log-search').addEventListener('input', renderLogs);

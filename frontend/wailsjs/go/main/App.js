@@ -58,6 +58,10 @@ export function RebuildProject(arg1) {
   return window['go']['main']['App']['RebuildProject'](arg1);
 }
 
+export function ReorderProjects(arg1) {
+  return window['go']['main']['App']['ReorderProjects'](arg1);
+}
+
 export function ResizeTerminal(arg1, arg2, arg3) {
   return window['go']['main']['App']['ResizeTerminal'](arg1, arg2, arg3);
 }

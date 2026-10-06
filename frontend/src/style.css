@@ -27,7 +27,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .button.full { width: 100%; }
 .side-label { display: flex; justify-content: space-between; color: #8292ad; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; padding: 28px 8px 10px; }
 .project-list { overflow-y: auto; padding-right: 2px; min-height: 0; }
-.project-item { width: 100%; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 9px; background: transparent; padding: 4px 5px; color: #dce5f3; margin-bottom: 4px; }
+.project-item { position: relative; width: 100%; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 9px; background: transparent; padding: 4px 5px; color: #dce5f3; margin-bottom: 4px; user-select: none; }
+.project-drag-handle { display: grid; place-items: center; flex: none; width: 14px; height: 30px; padding: 0; border: 0; border-radius: 4px; color: #667b99; background: transparent; cursor: grab; touch-action: none; }
+.project-drag-handle svg { width: 10px; height: 17px; fill: currentColor; }
+.project-drag-handle:hover, .project-drag-handle:focus-visible { color: #a9ceff; background: #2a3c58; }
+.project-list.sorting, .project-list.sorting * { cursor: grabbing; }
+.project-item.dragging { opacity: .45; border-style: dashed; border-color: #639ae0; }
+.project-item.drop-before::before, .project-item.drop-after::after { content: ''; position: absolute; left: 0; right: 0; height: 2px; border-radius: 2px; background: #76b2ff; pointer-events: none; }
+.project-item.drop-before::before { top: -3px; }
+.project-item.drop-after::after { bottom: -3px; }
 .project-item:hover { background: #1b2a42; }
 .project-item.selected { background: #203960; border-color: #2d568e; }
 .project-select { flex: 1; min-width: 0; padding: 8px 5px; border: 0; background: transparent; color: inherit; text-align: left; border-radius: 5px; }
@@ -95,6 +103,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .field { display: flex; flex-direction: column; min-width: 0; gap: 7px; }
 .field.wide { grid-column: 1 / -1; }
 .field > span { color: #a8b7cf; font-size: 11px; font-weight: 600; }
+.field-hint { color: #8fa5c3; font-size: 11px; overflow-wrap: anywhere; }
 .field input, .field select, .field textarea, .log-actions input { width: 100%; border: 1px solid #34445c; border-radius: 8px; background: #101b2c; color: #e4edf9; outline: none; padding: 9px 11px; min-height: 36px; font-size: 12px; transition: border-color .15s, box-shadow .15s, background .15s; }
 .field input:focus, .field select:focus, .field textarea:focus, .log-actions input:focus { border-color: #4a91f5; box-shadow: 0 0 0 2px #3589f523; }
 .field input:hover:not(:disabled), .field select:hover:not(:disabled), .field textarea:hover:not(:disabled) { border-color: #4c6485; }

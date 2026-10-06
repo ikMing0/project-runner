@@ -30,6 +30,8 @@ export function PickToolFile():Promise<string>;
 
 export function RebuildProject(arg1:string):Promise<void>;
 
+export function ReorderProjects(arg1:Array<string>):Promise<void>;
+
 export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function RestartProject(arg1:string):Promise<void>;

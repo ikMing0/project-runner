@@ -70,6 +70,7 @@ type App struct {
 	ctx            context.Context
 	mu             sync.Mutex
 	projects       map[string]Project
+	projectOrder   []string
 	runs           map[string]*run
 	history        map[string][]LogLine
 	statuses       map[string]Status
@@ -100,6 +101,9 @@ func (a *App) startup(ctx context.Context) {
 	if json.Unmarshal(data, &projects) == nil {
 		for _, p := range projects {
 			if p.ID != "" {
+				if _, exists := a.projects[p.ID]; !exists {
+					a.projectOrder = append(a.projectOrder, p.ID)
+				}
 				a.projects[p.ID] = p
 			}
 		}
@@ -140,11 +144,7 @@ func (a *App) saveLocked() error {
 	if a.configPath == "" {
 		return errors.New("无法确定配置目录")
 	}
-	projects := make([]Project, 0, len(a.projects))
-	for _, p := range a.projects {
-		projects = append(projects, p)
-	}
-	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
+	projects := a.orderedProjectsLocked()
 	data, err := json.MarshalIndent(projects, "", "  ")
 	if err != nil {
 		return err
@@ -166,12 +166,55 @@ func (a *App) saveLocked() error {
 func (a *App) ListProjects() []Project {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.orderedProjectsLocked()
+}
+
+// The existing JSON array carries the sidebar order without changing its format.
+func (a *App) orderedProjectsLocked() []Project {
 	projects := make([]Project, 0, len(a.projects))
-	for _, p := range a.projects {
-		projects = append(projects, p)
+	seen := make(map[string]bool, len(a.projects))
+	for _, id := range a.projectOrder {
+		if p, exists := a.projects[id]; exists && !seen[id] {
+			projects = append(projects, p)
+			seen[id] = true
+		}
 	}
-	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
+	var remaining []Project
+	for id, p := range a.projects {
+		if !seen[id] {
+			remaining = append(remaining, p)
+		}
+	}
+	sort.Slice(remaining, func(i, j int) bool {
+		if remaining[i].Name == remaining[j].Name {
+			return remaining[i].ID < remaining[j].ID
+		}
+		return remaining[i].Name < remaining[j].Name
+	})
+	projects = append(projects, remaining...)
 	return projects
+}
+
+func (a *App) ReorderProjects(ids []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(ids) != len(a.projects) {
+		return errors.New("项目列表已变化，请刷新后重新排序")
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if _, exists := a.projects[id]; !exists || seen[id] {
+			return errors.New("排序必须包含所有项目，且不能重复")
+		}
+		seen[id] = true
+	}
+	previous := a.projectOrder
+	a.projectOrder = append([]string(nil), ids...)
+	if err := a.saveLocked(); err != nil {
+		a.projectOrder = previous
+		return err
+	}
+	return nil
 }
 
 func (a *App) SaveProject(p Project) (Project, error) {
@@ -256,8 +299,19 @@ func (a *App) SaveProject(p Project) (Project, error) {
 		return Project{}, errors.New("请先停止项目，再修改配置")
 	}
 	previous, existed := a.projects[p.ID]
+	previousOrder := a.projectOrder
+	if !existed {
+		// Also normalize any previously loaded entries before appending a new one.
+		ordered := a.orderedProjectsLocked()
+		a.projectOrder = make([]string, 0, len(ordered)+1)
+		for _, project := range ordered {
+			a.projectOrder = append(a.projectOrder, project.ID)
+		}
+		a.projectOrder = append(a.projectOrder, p.ID)
+	}
 	a.projects[p.ID] = p
 	if err := a.saveLocked(); err != nil {
+		a.projectOrder = previousOrder
 		if existed {
 			a.projects[p.ID] = previous
 		} else {
@@ -281,8 +335,16 @@ func (a *App) DeleteProject(id string) error {
 		return errors.New("项目不存在")
 	}
 	delete(a.projects, id)
+	previousOrder := a.projectOrder
+	a.projectOrder = make([]string, 0, len(previousOrder))
+	for _, orderedID := range previousOrder {
+		if orderedID != id {
+			a.projectOrder = append(a.projectOrder, orderedID)
+		}
+	}
 	if err := a.saveLocked(); err != nil {
 		a.projects[id] = p
+		a.projectOrder = previousOrder
 		return err
 	}
 	delete(a.history, id)
