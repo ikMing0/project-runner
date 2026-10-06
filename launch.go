@@ -29,7 +29,7 @@ func buildCommand(p Project) (commandSpec, error) {
 			return spec, fmt.Errorf("JDK 路径无效: %s", p.JavaHome)
 		}
 		spec.Env = append(spec.Env, "JAVA_HOME="+p.JavaHome)
-		spec.Env = append(spec.Env, "PATH="+filepath.Join(p.JavaHome, "bin")+";"+os.Getenv("PATH"))
+		spec.Env = append(spec.Env, "PATH="+filepath.Join(p.JavaHome, "bin")+";"+environmentValue(spec.Env, "PATH"))
 	}
 	if p.Kind == "node" {
 		manager := p.PackageManager

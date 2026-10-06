@@ -42,6 +42,8 @@ type Detection struct {
 	PackageManager string   `json:"packageManager"`
 	PortMode       string   `json:"portMode"`
 	Scripts        []string `json:"scripts"`
+	Module         string   `json:"module"`
+	Modules        []string `json:"modules"`
 }
 
 type LogLine struct {
@@ -294,6 +296,10 @@ func (a *App) DetectProject(directory string) (Detection, error) {
 	d := Detection{Name: suggestedProjectName(directory)}
 	if exists(filepath.Join(directory, "pom.xml")) {
 		d.Kind = "spring-maven"
+		d.Modules = bootModules(directory)
+		if len(d.Modules) == 1 && d.Modules[0] != "." {
+			d.Module = d.Modules[0]
+		}
 		return d, nil
 	}
 	if exists(filepath.Join(directory, "build.gradle")) || exists(filepath.Join(directory, "build.gradle.kts")) {

@@ -34,6 +34,10 @@ export function PickToolFile() {
   return window['go']['main']['App']['PickToolFile']();
 }
 
+export function RebuildProject(arg1) {
+  return window['go']['main']['App']['RebuildProject'](arg1);
+}
+
 export function RestartProject(arg1) {
   return window['go']['main']['App']['RestartProject'](arg1);
 }

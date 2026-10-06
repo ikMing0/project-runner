@@ -3,16 +3,15 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 	"unsafe"
@@ -23,27 +22,33 @@ import (
 )
 
 type run struct {
-	cmd       *exec.Cmd
-	started   time.Time
-	job       windows.Handle
-	done      chan struct{}
-	stopOnce  sync.Once
-	stopping  bool
-	mu        sync.Mutex
-	temporary []string
+	cmd            *exec.Cmd
+	started        time.Time
+	job            windows.Handle
+	done           chan struct{}
+	stopOnce       sync.Once
+	stopping       bool
+	mu             sync.Mutex
+	temporary      []string
+	buildDirectory string
 }
+
+var errRunCancelled = errors.New("启动已取消")
 
 func (r *run) stop() {
 	r.stopOnce.Do(func() {
 		r.mu.Lock()
+		defer r.mu.Unlock()
 		r.stopping = true
-		r.mu.Unlock()
-		// Hidden console processes have no console to receive CTRL_BREAK.
-		_ = windows.TerminateJobObject(r.job, 1)
+		if r.job != 0 {
+			_ = windows.TerminateJobObject(r.job, 1)
+		}
 	})
 }
 
-func (a *App) StartProject(id string) error {
+func (a *App) StartProject(id string) error { return a.startProject(id, false) }
+
+func (a *App) startProject(id string, clean bool) error {
 	started := time.Now()
 	a.mu.Lock()
 	p, found := a.projects[id]
@@ -71,107 +76,164 @@ func (a *App) StartProject(id string) error {
 		}
 		_ = listener.Close()
 	}
-	spec, err := buildCommand(p)
+	plan, err := buildLaunchPlan(p, clean)
 	if err != nil {
 		a.mu.Unlock()
 		return err
 	}
-	cmd := exec.Command(spec.Executable, spec.Args...)
-	cmd.Dir = spec.Directory
-	cmd.Env = spec.Env
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NO_WINDOW,
-		HideWindow:    true,
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		a.mu.Unlock()
-		cleanTemporary(spec.Temporary)
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		a.mu.Unlock()
-		cleanTemporary(spec.Temporary)
-		return err
+	for _, other := range a.runs {
+		if plan.BuildDirectory != "" && strings.EqualFold(plan.BuildDirectory, other.buildDirectory) {
+			a.mu.Unlock()
+			cleanTemporary(plan.Temporary)
+			return errors.New("同一工作树已有构建或运行实例，请先停止该实例")
+		}
 	}
 	job, err := newJob()
 	if err != nil {
 		a.mu.Unlock()
-		cleanTemporary(spec.Temporary)
+		cleanTemporary(plan.Temporary)
 		return err
 	}
-	if err := cmd.Start(); err != nil {
-		_ = windows.CloseHandle(job)
-		a.mu.Unlock()
-		cleanTemporary(spec.Temporary)
-		return err
+	r := &run{started: started, job: job, done: make(chan struct{}), temporary: plan.Temporary, buildDirectory: plan.BuildDirectory}
+	a.runs[id], a.history[id] = r, nil
+	state := "starting"
+	if plan.Build != nil {
+		state = "building"
 	}
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
-	if err == nil {
-		err = windows.AssignProcessToJobObject(job, process)
-		_ = windows.CloseHandle(process)
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		_ = windows.CloseHandle(job)
-		a.mu.Unlock()
-		cleanTemporary(spec.Temporary)
-		return fmt.Errorf("无法管理子进程: %w", err)
-	}
-	r := &run{cmd: cmd, started: started, job: job, done: make(chan struct{}), temporary: spec.Temporary}
-	a.runs[id] = r
-	a.history[id] = nil
-	status := Status{ID: id, State: "starting", PID: cmd.Process.Pid, StartedAt: started.UnixMilli()}
+	status := Status{ID: id, State: state, StartedAt: started.UnixMilli()}
 	a.statuses[id] = status
 	a.mu.Unlock()
 	a.emitStatus(status)
-	a.appendLog(id, "system", fmt.Sprintf("启动 %s（PID %d，端口 %d）", p.Name, cmd.Process.Pid, p.Port))
-	var readers sync.WaitGroup
-	readers.Add(2)
-	go func() { defer readers.Done(); a.readOutput(id, stdout, "stdout") }()
-	go func() { defer readers.Done(); a.readOutput(id, stderr, "stderr") }()
-	if p.Kind == "node" && p.PortMode == "none" {
-		a.markRunning(id, r)
-	} else {
-		go a.waitForReady(id, p.Port, r)
-	}
-	go func() {
-		err := cmd.Wait()
-		// The launcher may finish before its child. The job ensures descendants exit.
-		_ = windows.TerminateJobObject(job, 1)
-		readers.Wait()
-		waitForJobExit(job)
-		if usesPort {
-			waitForPortRelease(p.Port)
-		}
-		_ = windows.CloseHandle(job)
-		cleanTemporary(r.temporary)
-		status := Status{ID: id, State: "stopped", PID: 0}
-		r.mu.Lock()
-		requested := r.stopping
-		r.mu.Unlock()
-		if err != nil && !requested {
-			status.State = "failed"
-			status.Error = err.Error()
-		}
-		if cmd.ProcessState != nil {
-			exit := cmd.ProcessState.ExitCode()
-			status.ExitCode = &exit
-		}
-		a.mu.Lock()
-		previous := a.statuses[id]
-		status.StartedAt = previous.StartedAt
-		status.StartupDurationMs = previous.StartupDurationMs
-		delete(a.runs, id)
-		a.statuses[id] = status
-		a.mu.Unlock()
-		a.appendLog(id, "system", "进程已退出")
-		a.emitStatus(status)
-		close(r.done)
-	}()
+	go a.runPlan(id, p, r, plan)
 	return nil
+}
+
+func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
+	phase := "启动"
+	var cmd *exec.Cmd
+	var err error
+	if plan.Build != nil {
+		phase = "构建"
+		a.appendLog(id, "system", "构建当前工作树及依赖模块: "+plan.BuildDirectory)
+		cmd, err = a.executeStage(id, p, r, *plan.Build, "building")
+	}
+	if err == nil {
+		r.mu.Lock()
+		cancelled := r.stopping
+		r.mu.Unlock()
+		if cancelled {
+			err = errRunCancelled
+		}
+	}
+	if err == nil {
+		phase = "启动"
+		var spec commandSpec
+		spec, err = plan.Next()
+		if err == nil {
+			if plan.Build != nil {
+				a.appendLog(id, "system", "构建成功，启动当前工作树的产物")
+			}
+			cmd, err = a.executeStage(id, p, r, spec, "starting")
+		}
+	}
+	a.finishRun(id, p, r, cmd, phase, err)
+}
+
+func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state string) (*exec.Cmd, error) {
+	cmd, err := managedCommand(spec)
+	if err != nil {
+		return nil, err
+	}
+	stdout := &logWriter{app: a, id: id, source: "stdout"}
+	stderr := &logWriter{app: a, id: id, source: "stderr"}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	r.mu.Lock()
+	if r.stopping {
+		r.mu.Unlock()
+		return nil, errRunCancelled
+	}
+	if err = cmd.Start(); err != nil {
+		r.mu.Unlock()
+		return cmd, err
+	}
+	process, assignErr := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	if assignErr == nil {
+		assignErr = windows.AssignProcessToJobObject(r.job, process)
+		_ = windows.CloseHandle(process)
+	}
+	if assignErr != nil {
+		_ = cmd.Process.Kill()
+		r.mu.Unlock()
+		_ = cmd.Wait()
+		stdout.flush()
+		stderr.flush()
+		return cmd, fmt.Errorf("无法管理子进程: %w", assignErr)
+	}
+	r.cmd = cmd
+	r.mu.Unlock()
+	a.mu.Lock()
+	status := a.statuses[id]
+	status.State, status.PID = state, cmd.Process.Pid
+	a.statuses[id] = status
+	a.mu.Unlock()
+	a.emitStatus(status)
+	label := "启动"
+	if state == "building" {
+		label = "构建"
+	}
+	a.appendLog(id, "system", fmt.Sprintf("%s %s（PID %d，端口 %d）", label, p.Name, cmd.Process.Pid, p.Port))
+	if state == "starting" {
+		if p.Kind == "node" && p.PortMode == "none" {
+			a.markRunning(id, r)
+		} else {
+			go a.waitForReady(id, p.Port, r)
+		}
+	}
+	err = cmd.Wait()
+	stdout.flush()
+	stderr.flush()
+	// A batch launcher may exit while descendants still exist.
+	r.mu.Lock()
+	_ = windows.TerminateJobObject(r.job, 1)
+	r.mu.Unlock()
+	waitForJobExit(r.job)
+	return cmd, err
+}
+
+func (a *App) finishRun(id string, p Project, r *run, cmd *exec.Cmd, phase string, err error) {
+	r.mu.Lock()
+	requested := r.stopping
+	_ = windows.TerminateJobObject(r.job, 1)
+	waitForJobExit(r.job)
+	_ = windows.CloseHandle(r.job)
+	r.job = 0
+	r.mu.Unlock()
+	if p.Kind != "node" || p.PortMode != "none" {
+		waitForPortRelease(p.Port)
+	}
+	cleanTemporary(r.temporary)
+	status := Status{ID: id, State: "stopped"}
+	if err != nil && !requested {
+		status.State = "failed"
+		status.Error = phase + "失败: " + err.Error()
+		a.appendLog(id, "system", status.Error)
+	} else {
+		a.appendLog(id, "system", "进程已退出")
+	}
+	if cmd != nil && cmd.ProcessState != nil {
+		exit := cmd.ProcessState.ExitCode()
+		status.ExitCode = &exit
+	}
+	a.mu.Lock()
+	previous := a.statuses[id]
+	status.StartedAt, status.StartupDurationMs = previous.StartedAt, previous.StartupDurationMs
+	a.statuses[id] = status
+	// Close done while holding the map lock: a replacement run cannot publish
+	// its initial status before the old run's final status has been emitted.
+	a.emitStatus(status)
+	delete(a.runs, id)
+	close(r.done)
+	a.mu.Unlock()
 }
 
 type jobAccounting struct {
@@ -266,20 +328,44 @@ func (a *App) markRunning(id string, r *run) {
 	a.emitStatus(status)
 }
 
-func (a *App) readOutput(id string, pipe io.Reader, source string) {
-	scanner := bufio.NewScanner(pipe)
-	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !utf8.Valid(line) {
-			if decoded, err := simplifiedchinese.GB18030.NewDecoder().Bytes(line); err == nil {
-				line = decoded
-			}
+// os/exec owns the copying goroutines and drains them before Wait returns.
+// This avoids losing the final error lines when a process exits immediately.
+type logWriter struct {
+	app        *App
+	id, source string
+	pending    []byte
+}
+
+func (w *logWriter) Write(data []byte) (int, error) {
+	count := len(data)
+	w.pending = append(w.pending, data...)
+	for {
+		index := bytes.IndexByte(w.pending, '\n')
+		if index < 0 {
+			break
 		}
-		a.appendLog(id, source, string(line))
+		w.line(bytes.TrimSuffix(w.pending[:index], []byte("\r")))
+		w.pending = w.pending[index+1:]
 	}
-	if err := scanner.Err(); err != nil {
-		a.appendLog(id, "system", "读取日志失败: "+err.Error())
+	if len(w.pending) > 2*1024*1024 {
+		w.flush()
+	}
+	return count, nil
+}
+
+func (w *logWriter) line(line []byte) {
+	if !utf8.Valid(line) {
+		if decoded, err := simplifiedchinese.GB18030.NewDecoder().Bytes(line); err == nil {
+			line = decoded
+		}
+	}
+	w.app.appendLog(w.id, w.source, string(line))
+}
+
+func (w *logWriter) flush() {
+	if len(w.pending) != 0 {
+		w.line(w.pending)
+		w.pending = nil
 	}
 }
 
@@ -317,7 +403,19 @@ func (a *App) StopProject(id string) error {
 	return nil
 }
 
-func (a *App) RestartProject(id string) error {
+func (a *App) RestartProject(id string) error { return a.restartProject(id, false) }
+
+func (a *App) RebuildProject(id string) error {
+	a.mu.Lock()
+	p, found := a.projects[id]
+	a.mu.Unlock()
+	if !found || p.Kind != "spring-maven" {
+		return errors.New("重新构建仅适用于 Maven 项目")
+	}
+	return a.restartProject(id, true)
+}
+
+func (a *App) restartProject(id string, clean bool) error {
 	a.mu.Lock()
 	r := a.runs[id]
 	a.mu.Unlock()
@@ -325,7 +423,7 @@ func (a *App) RestartProject(id string) error {
 		r.stop()
 		<-r.done
 	}
-	return a.StartProject(id)
+	return a.startProject(id, clean)
 }
 
 func cleanTemporary(files []string) {

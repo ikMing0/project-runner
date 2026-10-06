@@ -1,7 +1,8 @@
 import './style.css';
+import { isNewRun, actionableError } from './run-state.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, GetStatuses, GetLogs,
-  PickDirectory, PickConfigFile, PickToolFile, DetectProject, StartProject, StopProject, RestartProject,
+  PickDirectory, PickConfigFile, PickToolFile, DetectProject, StartProject, StopProject, RestartProject, RebuildProject,
 } from '../wailsjs/go/main/App';
 import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
 
@@ -19,13 +20,13 @@ app.innerHTML = `
     <main class="main">
       <div id="empty-state" class="empty-state">
         <div class="empty-icon">⌘</div><h1>把项目加进来，集中管理运行</h1>
-        <p>Spring Boot 与 Vue 项目都可以从工作树启动。每个实例分别配置端口、路径和日志。</p>
+        <p>Spring Boot 与 Vue 项目都可以从工作树启动。每个实例分别配置端口、路径和日志。Maven 项目会自动构建依赖后启动。</p>
         <button id="empty-add" class="button primary">添加第一个项目</button>
       </div>
       <div id="project-view" class="project-view hidden">
         <header class="project-header">
           <div><div class="eyebrow" id="header-kind">运行配置</div><h1 id="header-name">项目</h1><p id="header-path"></p></div>
-          <div class="header-actions"><span id="status-pill" class="status-pill">未运行</span><button id="start" class="button primary">▶ 启动</button><button id="restart" class="button">↻ 重启</button><button id="stop" class="button danger">■ 停止</button><button id="toggle-config" class="button config-toggle" type="button" aria-controls="settings-panel" aria-expanded="false">配置</button></div>
+          <div class="header-actions"><span id="status-pill" class="status-pill">未运行</span><button id="start" class="button primary">▶ 启动</button><button id="restart" class="button">↻ 重启</button><button id="rebuild" class="button" title="清理产物后重新构建并启动">重新构建</button><button id="stop" class="button danger">■ 停止</button><button id="toggle-config" class="button config-toggle" type="button" aria-controls="settings-panel" aria-expanded="false">配置</button></div>
         </header>
         <div id="issue-banner" class="issue-banner hidden" role="status" aria-live="polite"><span class="issue-icon">!</span><div class="issue-copy"><strong id="issue-title"></strong><span id="issue-message"></span></div><button id="issue-view" class="button small">查看日志</button></div>
         <div id="content" class="content config-collapsed">
@@ -36,7 +37,7 @@ app.innerHTML = `
               <label class="field"><span>启动类型</span><select id="kind"><option value="spring-maven">Spring Boot · Maven</option><option value="spring-gradle">Spring Boot · Gradle</option><option value="node">Vue / Node 脚本</option></select></label>
               <label class="field wide"><span>项目 / 工作树目录</span><div class="input-action"><input id="directory" placeholder="选择含 pom.xml、build.gradle 或 package.json 的目录"><button id="browse-directory" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
               <label class="field"><span>端口</span><input id="port" type="number" min="1" max="65535" value="8080"></label>
-              <label class="field java-field"><span>模块子目录（可选）</span><input id="module" placeholder="例如 ruoyi-admin"></label>
+              <label class="field java-field"><span>模块子目录（可选）</span><input id="module" list="module-options" placeholder="例如 ruoyi-admin"><datalist id="module-options"></datalist></label>
               <label class="field java-field"><span>JDK 目录（可选）</span><div class="input-action"><input id="java-home" placeholder="留空使用系统 JAVA_HOME"><button id="reuse-java" class="button small browse-button reuse-button" type="button" title="从其他已保存项目复用 JDK 目录">复用</button><button id="browse-java" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
               <label class="field java-field"><span>Maven / Gradle 启动文件（可选）</span><div class="input-action"><input id="tool-path" placeholder="留空使用项目 Wrapper 或系统 PATH"><button id="reuse-tool" class="button small browse-button reuse-button" type="button" title="从同类型的已保存项目复用启动文件">复用</button><button id="browse-tool" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
               <label class="field node-field"><span>包管理器</span><select id="manager"><option value="npm">npm</option><option value="pnpm">pnpm</option><option value="yarn">yarn</option></select></label>
@@ -127,9 +128,9 @@ function notify(message, error = false) {
 }
 
 function stateFor(id) { return statuses.get(id)?.state || 'stopped'; }
-function isActive(id) { return ['starting', 'running'].includes(stateFor(id)); }
+function isActive(id) { return ['building', 'starting', 'running'].includes(stateFor(id)); }
 function usesPort(project) { return project.kind !== 'node' || project.portMode !== 'none'; }
-function stateText(state) { return ({ starting: '启动中', running: '运行中', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
+function stateText(state) { return ({ building: '构建中', starting: '启动中', running: '运行中', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
 function kindText(kind) { return ({ 'spring-maven': 'SPRING · MAVEN', 'spring-gradle': 'SPRING · GRADLE', node: 'VUE / NODE' })[kind] || '运行配置'; }
 function formatStartupDuration(ms) {
   const seconds = Math.max(0, ms) / 1000;
@@ -137,8 +138,8 @@ function formatStartupDuration(ms) {
   return `${Math.floor(seconds / 60)} 分 ${Math.floor(seconds % 60)} 秒`;
 }
 function startupText(status) {
-  if (status?.state === 'starting' && status.startedAt) {
-    return `启动中 · ${formatStartupDuration(Date.now() - status.startedAt)}`;
+  if (['building', 'starting'].includes(status?.state) && status.startedAt) {
+    return `${stateText(status.state)} · ${formatStartupDuration(Date.now() - status.startedAt)}`;
   }
   if (status?.startupDurationMs != null) {
     return `${status.state === 'running' ? '启动耗时' : '上次启动'} · ${formatStartupDuration(status.startupDurationMs)}`;
@@ -186,7 +187,7 @@ function renderList() {
     const timing = startupText(status);
     if (timing) {
       const duration = document.createElement('span');
-      duration.className = `project-startup-time ${status.state === 'starting' ? 'starting' : ''}`;
+      duration.className = `project-startup-time ${['building', 'starting'].includes(status.state) ? 'starting' : ''}`;
       duration.dataset.projectId = project.id;
       duration.textContent = timing;
       duration.title = timing;
@@ -319,6 +320,8 @@ function renderHeader() {
   $('start').disabled = !!p.id && isActive(p.id);
   $('restart').disabled = !p.id || !isActive(p.id);
   $('stop').disabled = !p.id || !isActive(p.id);
+  $('rebuild').classList.toggle('hidden', p.kind !== 'spring-maven');
+  $('rebuild').disabled = !p.id || pendingProjects.has(p.id);
   $('open-browser').disabled = !p.id || status.state !== 'running' || !usesPort(p);
   $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(p) ? `端口 ${p.port}` : '未指定端口'}`;
 }
@@ -335,7 +338,7 @@ function renderIssue() {
   const banner = $('issue-banner');
   const errors = logs.filter((line) => logLevel(line) === 'error');
   const warnings = logs.filter((line) => logLevel(line) === 'warn');
-  const latest = errors.at(-1) || warnings.at(-1);
+  const latest = errors.find((line) => actionableError(line.text)) || errors[0] || warnings[0];
   banner.classList.toggle('hidden', !latest);
   if (!latest) return;
   banner.classList.toggle('warning', !errors.length);
@@ -449,6 +452,10 @@ async function saveCurrent() {
 }
 
 async function act(action) {
+  const id = draft?.id;
+  if (id && pendingProjects.has(id)) return;
+  if (id) pendingProjects.add(id);
+  renderHeader();
   try {
     if (action === 'start') {
       const saved = dirty || !draft.id ? await saveCurrent() : draft;
@@ -457,8 +464,12 @@ async function act(action) {
       await StopProject(draft.id);
     } else if (action === 'restart') {
       await RestartProject(draft.id);
+    } else if (action === 'rebuild') {
+      const saved = dirty || !draft.id ? await saveCurrent() : draft;
+      await RebuildProject(saved.id);
     }
   } catch (error) { notify(error, true); }
+  finally { if (id) pendingProjects.delete(id); renderHeader(); renderList(); }
 }
 
 async function quickAction(id, action) {
@@ -493,6 +504,11 @@ async function detect() {
       $('kind').value = detection.kind;
       $('manager').value = detection.packageManager || 'npm';
       $('port-mode').value = detection.portMode || 'none';
+      if (detection.kind === 'spring-maven' && detection.module) $('module').value = detection.module;
+      $('module-options').replaceChildren();
+      for (const module of detection.modules || []) {
+        const option = document.createElement('option'); option.value = module; $('module-options').append(option);
+      }
     } else {
       notify('已识别工作树名称；未找到启动配置文件，请手动选择启动类型和模块目录');
     }
@@ -522,6 +538,7 @@ function bind() {
   $('start').onclick = () => act('start');
   $('stop').onclick = () => act('stop');
   $('restart').onclick = () => act('restart');
+  $('rebuild').onclick = () => act('rebuild');
   $('open-browser').onclick = () => BrowserOpenURL(`http://127.0.0.1:${draft.port}`);
   $('browse-directory').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('directory').value = path; dirty = true; await detect(); } } catch (error) { notify(error, true); } };
   $('browse-java').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('java-home').value = path; dirty = true; } } catch (error) { notify(error, true); } };
@@ -570,7 +587,7 @@ function bind() {
   document.querySelectorAll('.log-filter').forEach((button) => { button.onclick = () => { logMode = button.dataset.logFilter; renderLogs(); }; });
   $('issue-view').onclick = () => { logMode = 'focus'; renderLogs(); document.querySelector('.logs').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   EventsOn('project:status', (status) => {
-    if (status.state === 'starting') {
+    if (isNewRun(statuses.get(status.id), status)) {
       alertedRuns.delete(status.id);
       projectProblems.delete(status.id);
       if (draft?.id === status.id) { logs = []; renderLogs(); }

@@ -6,6 +6,8 @@ export namespace main {
 	    packageManager: string;
 	    portMode: string;
 	    scripts: string[];
+	    module: string;
+	    modules: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Detection(source);
@@ -18,6 +20,8 @@ export namespace main {
 	        this.packageManager = source["packageManager"];
 	        this.portMode = source["portMode"];
 	        this.scripts = source["scripts"];
+	        this.module = source["module"];
+	        this.modules = source["modules"];
 	    }
 	}
 	export class LogLine {

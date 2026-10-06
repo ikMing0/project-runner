@@ -25,6 +25,10 @@ func classifyLogLevel(source, message string) string {
 		strings.HasPrefix(upper, "ERROR ") || strings.HasPrefix(upper, "NPM ERR!") ||
 		strings.HasPrefix(upper, "NPM ERROR") || strings.HasPrefix(upper, "FAILURE:") ||
 		strings.HasPrefix(upper, "FATAL ") ||
+		strings.Contains(line, "不是内部或外部命令") ||
+		strings.Contains(upper, "IS NOT RECOGNIZED AS AN INTERNAL OR EXTERNAL COMMAND") ||
+		strings.Contains(line, "系统找不到指定的路径") || strings.Contains(line, "系统找不到指定的文件") ||
+		strings.Contains(upper, "THE JAVA_HOME ENVIRONMENT VARIABLE IS NOT DEFINED CORRECTLY") ||
 		strings.HasPrefix(line, "Caused by:") || strings.HasPrefix(line, "Exception in thread") ||
 		strings.Contains(upper, "APPLICATION FAILED TO START") || strings.Contains(upper, "BUILD FAILURE") ||
 		(strings.HasPrefix(upper, "> TASK") && strings.HasSuffix(upper, "FAILED")) {

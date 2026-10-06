@@ -18,6 +18,8 @@ export function PickDirectory():Promise<string>;
 
 export function PickToolFile():Promise<string>;
 
+export function RebuildProject(arg1:string):Promise<void>;
+
 export function RestartProject(arg1:string):Promise<void>;
 
 export function SaveProject(arg1:main.Project):Promise<main.Project>;
