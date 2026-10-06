@@ -45,8 +45,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .project-quick-action.stop:hover:not(:disabled) { color: #fff; background: #6b3542; border-color: #ae5364; }
 .state-dot, .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #63738d; flex: none; }
 .state-dot.running { background: #35c98a; box-shadow: 0 0 12px #35c98a88; }
-.state-dot.starting, .state-dot.building { background: #f7c15b; box-shadow: 0 0 12px #f7c15b88; }
+.state-dot.checking, .state-dot.starting, .state-dot.building { background: #f7c15b; box-shadow: 0 0 12px #f7c15b88; }
 .state-dot.failed { background: #ff6f79; }
+.state-dot.partial { background: #f7a65b; }
 .side-footer { margin-top: auto; border-top: 1px solid #24324a; padding: 19px 4px 3px; color: #7d8da8; font-size: 11px; display: flex; align-items: center; gap: 8px; }
 .pulse-dot { background: #3d8eea; }
 .main { min-width: 0; min-height: 0; background: radial-gradient(circle at 70% 0, #16243b, #0d1422 58%); }
@@ -63,8 +64,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .config-toggle.active { color: #d7e9ff; background: #294873; border-color: #4f78ad; }
 .status-pill { display: inline-flex; align-items: center; padding: 7px 10px; border-radius: 20px; color: #aebbd0; background: #243046; font-size: 11px; white-space: nowrap; }
 .status-pill.running { color: #5ce3a7; background: #163d35; }
-.status-pill.starting, .status-pill.building { color: #ffd683; background: #4a3c27; }
+.status-pill.checking, .status-pill.starting, .status-pill.building { color: #ffd683; background: #4a3c27; }
 .status-pill.failed { color: #ff9aa0; background: #4b2b36; }
+.status-pill.partial { color: #ffc492; background: #4a3527; }
 .issue-banner { display: flex; align-items: center; gap: 11px; margin: 14px 28px 0; padding: 11px 13px; border: 1px solid #8f4957; border-radius: 9px; background: #442631; color: #ffe0e3; flex: none; }
 .issue-banner.warning { border-color: #866439; background: #423622; color: #ffe4b0; }
 .issue-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: 50%; background: #ad5060; color: white; font-weight: 800; }
@@ -86,6 +88,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .text-button:hover:not(:disabled) { color: #bad3ff; }
 .text-button.destructive { color: #f1999d; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 18px; }
+.frontend-section { margin-top: 24px; padding-top: 20px; border-top: 1px solid #304159; }
+.check-field { display: inline-flex; align-items: center; gap: 9px; font-size: 13px; cursor: pointer; }
+.check-field input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; accent-color: #4284ef; }
+.proxy-field p { margin: 0; color: #8fa5c3; font-size: 11px; overflow-wrap: anywhere; }
 .field { display: flex; flex-direction: column; min-width: 0; gap: 7px; }
 .field.wide { grid-column: 1 / -1; }
 .field > span { color: #a8b7cf; font-size: 11px; font-weight: 600; }
@@ -121,6 +127,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .log-resizer:hover span, .log-resizer.dragging span, .log-resizer:focus-visible span { width: 86px; background: #6fa6f5; }
 .log-resizer:focus-visible { outline: 2px solid #6fa6f5; outline-offset: -2px; border-radius: 6px; }
 .logs { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.service-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #28374e; flex: none; }
+.service-tabs, .service-actions { display: flex; align-items: center; gap: 7px; }
+.service-tab { padding: 7px 12px; border: 1px solid #354660; border-radius: 7px; color: #9db1cd; background: #101b2c; font-size: 12px; }
+.service-tab.selected { background: #254576; border-color: #5178af; color: #e1edff; }
 .log-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid #28374e; flex: none; }
 .log-toolbar h2 { display: inline; margin-right: 11px; }
 #log-summary { font-size: 11px; color: #8fa1ba; }

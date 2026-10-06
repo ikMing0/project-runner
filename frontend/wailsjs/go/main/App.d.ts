@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function DeleteProject(arg1:string):Promise<void>;
 
+export function DetectFrontend(arg1:string):Promise<main.FrontendConfig>;
+
 export function DetectProject(arg1:string):Promise<main.Detection>;
 
 export function GetLogs(arg1:string):Promise<Array<main.LogLine>>;
@@ -26,4 +28,8 @@ export function SaveProject(arg1:main.Project):Promise<main.Project>;
 
 export function StartProject(arg1:string):Promise<void>;
 
+export function StartService(arg1:string):Promise<void>;
+
 export function StopProject(arg1:string):Promise<void>;
+
+export function StopService(arg1:string):Promise<void>;

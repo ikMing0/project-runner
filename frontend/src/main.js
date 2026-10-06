@@ -1,8 +1,8 @@
 import './style.css';
-import { isNewRun, actionableError } from './run-state.mjs';
+import { isNewRun, actionableError, serviceIDs, activeState, groupState } from './run-state.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, GetStatuses, GetLogs,
-  PickDirectory, PickConfigFile, PickToolFile, DetectProject, StartProject, StopProject, RestartProject, RebuildProject,
+  PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
 } from '../wailsjs/go/main/App';
 import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
 
@@ -43,15 +43,34 @@ app.innerHTML = `
               <label class="field node-field"><span>包管理器</span><select id="manager"><option value="npm">npm</option><option value="pnpm">pnpm</option><option value="yarn">yarn</option></select></label>
               <label class="field node-field"><span>package.json 脚本</span><input id="script" list="script-options" placeholder="dev"><datalist id="script-options"></datalist></label>
               <label class="field node-field"><span>端口传入方式</span><select id="port-mode"><option value="vite">Vite --port</option><option value="vue-cli">Vue CLI --port</option><option value="env">PORT 环境变量</option><option value="none">不传端口</option></select></label>
+              <label class="field node-field"><span>Node.js 目录（可选）</span><div class="input-action"><input id="node-home" placeholder="留空使用系统 PATH"><button id="browse-node" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
+              <label class="field node-field wide"><span>包管理器启动文件（可选）</span><div class="input-action"><input id="node-tool" placeholder="例如 C:\\nvm4w\\nodejs\\npm.cmd"><button id="browse-node-tool" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
               <label class="field wide java-field"><span>本地配置文件 / 目录</span><div class="input-action"><input id="config-file" placeholder="例如 D:\\project\\file\\config\\application.properties"><button id="browse-config" class="button small browse-button" type="button">${browseIcon}选文件</button><button id="browse-config-dir" class="button small browse-button" type="button">${browseIcon}选目录</button></div></label>
               <label class="field java-field"><span>配置路径属性名</span><input id="config-property" value="application.config.path"></label>
               <label class="field java-field"><span>其他 JVM 参数</span><textarea id="jvm-args" rows="3" placeholder="每行一个参数，例如 -Xmx512m"></textarea></label>
               <label class="field"><span>其他应用参数</span><textarea id="app-args" rows="3" placeholder="每行一个参数"></textarea></label>
               <label class="field"><span>环境变量</span><textarea id="environment" rows="3" placeholder="每行 KEY=VALUE"></textarea></label>
             </div>
+            <div id="frontend-section" class="frontend-section java-field">
+              <div class="section-title"><div><label class="check-field"><input id="frontend-enabled" type="checkbox"><strong>启用配套前端</strong></label><p>作为一组启停，也可在日志页单独操作前端或后端</p></div><button id="detect-frontend" class="button small" type="button">识别配套前端</button></div>
+              <div id="frontend-fields" class="form-grid hidden">
+                <label class="field wide"><span>前端目录（含 package.json）</span><div class="input-action"><input id="frontend-directory"><button id="browse-frontend" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
+                <label class="field"><span>前端端口</span><input id="frontend-port" type="number" min="1" max="65535"></label>
+                <label class="field"><span>package.json 脚本</span><input id="frontend-script" list="frontend-script-options"><datalist id="frontend-script-options"></datalist></label>
+                <label class="field"><span>包管理器</span><select id="frontend-manager"><option value="npm">npm</option><option value="pnpm">pnpm</option><option value="yarn">yarn</option></select></label>
+                <label class="field"><span>端口传入方式</span><select id="frontend-port-mode"><option value="vite">Vite --port</option><option value="vue-cli">Vue CLI --port</option><option value="env">PORT 环境变量</option><option value="none">不传端口</option></select></label>
+                <label class="field"><span>Node.js 目录（可选）</span><div class="input-action"><input id="frontend-node-home" placeholder="例如 C:\\nvm4w\\nodejs"><button id="browse-frontend-node" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
+                <label class="field"><span>包管理器启动文件（可选）</span><div class="input-action"><input id="frontend-tool" placeholder="例如 C:\\nvm4w\\nodejs\\npm.cmd"><button id="browse-frontend-tool" class="button small browse-button" type="button">${browseIcon}浏览</button></div></label>
+                <div class="field wide proxy-field"><label class="check-field"><input id="frontend-auto-proxy" type="checkbox"><span>代理地址自动跟随后端端口</span></label><p id="frontend-proxy-hint"></p></div>
+                <label class="field wide"><span>代理环境变量名</span><input id="frontend-proxy-variable" placeholder="VUE_APP_BASE_API_TARGET"></label>
+                <label class="field"><span>前端应用参数</span><textarea id="frontend-args" rows="3" placeholder="每行一个参数"></textarea></label>
+                <label class="field"><span>前端环境变量</span><textarea id="frontend-environment" rows="3" placeholder="每行 KEY=VALUE；端口和自动代理由运行台传入"></textarea></label>
+              </div>
+            </div>
           </section>
           <div id="log-resizer" class="log-resizer" role="separator" aria-label="调整运行日志高度" aria-orientation="horizontal" aria-controls="log-output" tabindex="0" title="上下拖动，调整运行日志高度"><span></span></div>
           <section class="logs panel">
+            <div id="service-bar" class="service-bar hidden"><div id="service-tabs" class="service-tabs" role="tablist" aria-label="服务日志"></div><div class="service-actions"><button id="service-start" class="button small">启动当前服务</button><button id="service-stop" class="button small danger">停止当前服务</button></div></div>
             <div class="log-toolbar"><div><h2>运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="open-browser" class="button small">打开页面</button></div></div>
             <div class="log-filterbar"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span></div>
             <div id="log-output" class="log-output"><div class="log-placeholder">启动项目后，日志将在这里实时显示。</div></div>
@@ -69,6 +88,9 @@ let projects = [];
 let statuses = new Map();
 let current = null;
 let draft = null;
+let frontendDraft = null;
+let logSide = 'backend';
+let logLoadVersion = 0;
 let logs = [];
 let dirty = false;
 let autoName = '';
@@ -88,7 +110,8 @@ function logHeightBounds() {
   const content = $('content');
   const style = getComputedStyle(content);
   const available = content.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - $('log-resizer').offsetHeight;
-  return { min: 170, max: Math.max(170, Math.floor(available - 104)) };
+  const min = draft.frontend ? 220 : 170;
+  return { min, max: Math.max(min, Math.floor(available - 104)) };
 }
 
 function setLogHeight(height, save = false) {
@@ -117,7 +140,28 @@ function setConfigOpen(open) {
 function blankProject() {
   return { id: '', name: '', directory: '', kind: 'spring-maven', port: 8080,
     configFile: '', configProperty: 'application.config.path', javaHome: '', toolPath: '', module: '',
-    packageManager: 'npm', script: 'dev', portMode: 'vite', jvmArgs: '', appArgs: '', environment: {} };
+    packageManager: 'npm', script: 'dev', portMode: 'vite', nodeHome: '', jvmArgs: '', appArgs: '', environment: {}, frontend: null };
+}
+
+function blankFrontend() {
+  return { directory: '', port: 82, packageManager: 'npm', script: 'dev:vite', portMode: 'vite', nodeHome: '', toolPath: '',
+    appArgs: '', environment: {}, autoProxy: true, proxyVariable: 'VUE_APP_BASE_API_TARGET' };
+}
+
+function logServiceID() { return logSide === 'frontend' && draft?.frontend ? `${draft.id}:frontend` : draft?.id; }
+function groupActive(project) { return serviceIDs(project).some(isActive); }
+function canStartGroup(project) { return serviceIDs(project).some((id) => !isActive(id)); }
+function serviceProject() { return logSide === 'frontend' && draft?.frontend ? { ...draft.frontend, id: logServiceID(), kind: 'node' } : draft; }
+async function selectLogSide(side) {
+  logSide = side;
+  const version = ++logLoadVersion;
+  logs = [];
+  renderHeader();
+  renderLogs();
+  const lines = draft?.id ? await GetLogs(logServiceID()) : [];
+  if (version !== logLoadVersion) return;
+  logs = lines || [];
+  renderLogs();
 }
 
 function notify(message, error = false) {
@@ -128,9 +172,9 @@ function notify(message, error = false) {
 }
 
 function stateFor(id) { return statuses.get(id)?.state || 'stopped'; }
-function isActive(id) { return ['building', 'starting', 'running'].includes(stateFor(id)); }
+function isActive(id) { return activeState(stateFor(id)); }
 function usesPort(project) { return project.kind !== 'node' || project.portMode !== 'none'; }
-function stateText(state) { return ({ building: '构建中', starting: '启动中', running: '运行中', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
+function stateText(state) { return ({ checking: '检查中', building: '构建中', starting: '启动中', running: '运行中', partial: '部分运行', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
 function kindText(kind) { return ({ 'spring-maven': 'SPRING · MAVEN', 'spring-gradle': 'SPRING · GRADLE', node: 'VUE / NODE' })[kind] || '运行配置'; }
 function formatStartupDuration(ms) {
   const seconds = Math.max(0, ms) / 1000;
@@ -138,7 +182,7 @@ function formatStartupDuration(ms) {
   return `${Math.floor(seconds / 60)} 分 ${Math.floor(seconds % 60)} 秒`;
 }
 function startupText(status) {
-  if (['building', 'starting'].includes(status?.state) && status.startedAt) {
+  if (['checking', 'building', 'starting'].includes(status?.state) && status.startedAt) {
     return `${stateText(status.state)} · ${formatStartupDuration(Date.now() - status.startedAt)}`;
   }
   if (status?.startupDurationMs != null) {
@@ -169,11 +213,12 @@ function renderList() {
     const top = document.createElement('div');
     top.className = 'project-item-top';
     const dot = document.createElement('span');
-    dot.className = `state-dot ${stateFor(project.id)}`;
+    dot.className = `state-dot ${groupState(project, statuses)}`;
     const name = document.createElement('strong');
     name.textContent = project.name;
     top.append(dot, name);
-    const problem = projectProblems.get(project.id);
+    const problems = serviceIDs(project).map((id) => projectProblems.get(id));
+    const problem = problems.includes('error') ? 'error' : problems.includes('warn') ? 'warn' : null;
     if (problem) {
       const mark = document.createElement('span');
       mark.className = `project-alert-mark ${problem}`;
@@ -181,20 +226,20 @@ function renderList() {
       top.append(mark);
     }
     const sub = document.createElement('small');
-    sub.textContent = `${project.kind === 'node' ? 'Vue / Node' : 'Spring Boot'} · :${project.port}`;
+    sub.textContent = project.frontend ? `后端 :${project.port} · 前端 :${project.frontend.port}` : `${project.kind === 'node' ? 'Vue / Node' : 'Spring Boot'} · :${project.port}`;
     select.append(top, sub);
     const status = statuses.get(project.id);
     const timing = startupText(status);
     if (timing) {
       const duration = document.createElement('span');
-      duration.className = `project-startup-time ${['building', 'starting'].includes(status.state) ? 'starting' : ''}`;
+      duration.className = `project-startup-time ${['checking', 'building', 'starting'].includes(status.state) ? 'starting' : ''}`;
       duration.dataset.projectId = project.id;
       duration.textContent = timing;
       duration.title = timing;
       select.append(duration);
     }
     select.onclick = () => selectProject(project.id);
-    const active = isActive(project.id);
+    const active = groupActive(project);
     const quick = document.createElement('button');
     quick.type = 'button';
     quick.className = `project-quick-action ${active ? 'stop' : 'start'}`;
@@ -212,11 +257,23 @@ async function selectProject(id) {
   if (dirty && !confirm('当前配置尚未保存，确定切换项目吗？')) return;
   current = id;
   draft = structuredClone(projects.find((p) => p.id === id));
+  frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
   dirty = false;
   autoName = '';
   configOpen = false;
-  logs = await GetLogs(id);
   render();
+  await selectLogSide('backend');
+}
+
+function readEnvironment(id) {
+  const environment = {};
+  for (const line of $(id).value.split('\n')) {
+    if (!line.trim()) continue;
+    const equals = line.indexOf('=');
+    if (equals < 1) throw new Error(`环境变量格式应为 KEY=VALUE：${line}`);
+    environment[line.slice(0, equals).trim()] = line.slice(equals + 1);
+  }
+  return environment;
 }
 
 function readForm() {
@@ -227,7 +284,8 @@ function readForm() {
   draft.port = Number($('port').value);
   draft.module = $('module').value.trim();
   draft.javaHome = $('java-home').value.trim();
-  draft.toolPath = $('tool-path').value.trim();
+  draft.toolPath = $(draft.kind === 'node' ? 'node-tool' : 'tool-path').value.trim();
+  draft.nodeHome = $('node-home').value.trim();
   draft.packageManager = $('manager').value;
   draft.script = $('script').value.trim();
   draft.portMode = $('port-mode').value;
@@ -235,14 +293,15 @@ function readForm() {
   draft.configProperty = $('config-property').value.trim();
   draft.jvmArgs = $('jvm-args').value;
   draft.appArgs = $('app-args').value;
-  const environment = {};
-  for (const line of $('environment').value.split('\n')) {
-    if (!line.trim()) continue;
-    const equals = line.indexOf('=');
-    if (equals < 1) throw new Error(`环境变量格式应为 KEY=VALUE：${line}`);
-    environment[line.slice(0, equals).trim()] = line.slice(equals + 1);
-  }
-  draft.environment = environment;
+  draft.environment = readEnvironment('environment');
+  frontendDraft = {
+    directory: $('frontend-directory').value.trim(), port: Number($('frontend-port').value),
+    script: $('frontend-script').value.trim(), packageManager: $('frontend-manager').value, portMode: $('frontend-port-mode').value,
+    nodeHome: $('frontend-node-home').value.trim(), toolPath: $('frontend-tool').value.trim(), appArgs: $('frontend-args').value,
+    environment: draft.kind !== 'node' && $('frontend-enabled').checked ? readEnvironment('frontend-environment') : (frontendDraft?.environment || {}), autoProxy: $('frontend-auto-proxy').checked, proxyVariable: $('frontend-proxy-variable').value.trim(),
+  };
+  draft.frontend = draft.kind !== 'node' && $('frontend-enabled').checked ? frontendDraft : null;
+  if (!draft.frontend) logSide = 'backend';
 }
 
 function reusablePaths(field) {
@@ -291,7 +350,7 @@ function openReuseDialog(field) {
 function renderForm() {
   const p = draft;
   for (const [field, value] of Object.entries({ name: p.name, directory: p.directory, kind: p.kind,
-    port: p.port, module: p.module, 'java-home': p.javaHome, 'tool-path': p.toolPath, manager: p.packageManager || 'npm',
+    port: p.port, module: p.module, 'java-home': p.javaHome, 'tool-path': p.toolPath, 'node-tool': p.toolPath, 'node-home': p.nodeHome, manager: p.packageManager || 'npm',
     script: p.script || 'dev', 'port-mode': p.portMode || 'none', 'config-file': p.configFile,
     'config-property': p.configProperty || 'application.config.path', 'jvm-args': p.jvmArgs,
     'app-args': p.appArgs, environment: Object.entries(p.environment || {}).map(([k, v]) => `${k}=${v}`).join('\n') })) {
@@ -300,7 +359,17 @@ function renderForm() {
   const java = p.kind !== 'node';
   document.querySelectorAll('.java-field').forEach((el) => el.classList.toggle('hidden', !java));
   document.querySelectorAll('.node-field').forEach((el) => el.classList.toggle('hidden', java));
-  const active = p.id && isActive(p.id);
+  const f = p.frontend || frontendDraft || blankFrontend();
+  $('frontend-enabled').checked = !!p.frontend;
+  $('frontend-fields').classList.toggle('hidden', !p.frontend);
+  for (const [field, value] of Object.entries({ directory: f.directory, port: f.port, script: f.script, manager: f.packageManager,
+    'port-mode': f.portMode, 'node-home': f.nodeHome, tool: f.toolPath, args: f.appArgs,
+    environment: Object.entries(f.environment || {}).map(([k, v]) => `${k}=${v}`).join('\n'), 'proxy-variable': f.proxyVariable })) {
+    $(`frontend-${field}`).value = value ?? '';
+  }
+  $('frontend-auto-proxy').checked = f.autoProxy;
+  renderProxyHint();
+  const active = p.id && groupActive(p);
   document.querySelectorAll('.settings input, .settings select, .settings textarea, .settings button').forEach((el) => { el.disabled = !!active; });
   $('reuse-java').disabled = !!active || reusablePaths('javaHome').length === 0;
   $('reuse-tool').disabled = !!active || reusablePaths('toolPath').length === 0;
@@ -311,19 +380,45 @@ function renderForm() {
 
 function renderHeader() {
   const p = draft;
-  $('header-kind').textContent = kindText(p.kind);
+  $('header-kind').textContent = `${kindText(p.kind)}${p.frontend ? ' + VUE / NODE' : ''}`;
   $('header-name').textContent = p.name || '新项目';
   $('header-path').textContent = p.directory || '请选择项目目录';
-  const status = statuses.get(p.id) || { state: 'stopped' };
-  $('status-pill').textContent = stateText(status.state);
-  $('status-pill').className = `status-pill ${status.state}`;
-  $('start').disabled = !!p.id && isActive(p.id);
-  $('restart').disabled = !p.id || !isActive(p.id);
-  $('stop').disabled = !p.id || !isActive(p.id);
+  const state = groupState(p, statuses);
+  const pending = pendingProjects.has(p.id);
+  $('status-pill').textContent = stateText(state);
+  $('status-pill').className = `status-pill ${state}`;
+  $('start').textContent = p.frontend ? (groupActive(p) && canStartGroup(p) ? '▶ 补齐启动' : '▶ 全部启动') : '▶ 启动';
+  $('stop').textContent = p.frontend ? '■ 全部停止' : '■ 停止';
+  $('restart').textContent = p.frontend ? '↻ 全部重启' : '↻ 重启';
+  $('start').disabled = pending || !canStartGroup(p);
+  $('restart').disabled = pending || !p.id || !groupActive(p);
+  $('stop').disabled = pending || !p.id || !groupActive(p);
   $('rebuild').classList.toggle('hidden', p.kind !== 'spring-maven');
   $('rebuild').disabled = !p.id || pendingProjects.has(p.id);
-  $('open-browser').disabled = !p.id || status.state !== 'running' || !usesPort(p);
-  $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(p) ? `端口 ${p.port}` : '未指定端口'}`;
+  const page = p.frontend ? { ...p.frontend, id: `${p.id}:frontend`, kind: 'node' } : p;
+  $('open-browser').disabled = !p.id || stateFor(page.id) !== 'running' || !usesPort(page);
+  const service = serviceProject();
+  const status = statuses.get(service.id) || { state: 'stopped' };
+  $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(service) ? `端口 ${service.port}` : '未指定端口'}`;
+  $('service-bar').classList.toggle('hidden', !p.frontend);
+  $('service-tabs').replaceChildren();
+  if (p.frontend) {
+    for (const [side, id, label] of [['backend', p.id, '后端'], ['frontend', `${p.id}:frontend`, '前端']]) {
+      const tab = document.createElement('button');
+      tab.className = `service-tab ${logSide === side ? 'selected' : ''}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(logSide === side));
+      tab.textContent = `${label} · ${stateText(stateFor(id))}${projectProblems.get(id) === 'error' ? ' · 错误' : ''}`;
+      tab.onclick = () => selectLogSide(side).catch((error) => notify(error, true));
+      $('service-tabs').append(tab);
+    }
+  }
+  $('service-start').disabled = pending || isActive(service.id);
+  $('service-stop').disabled = pending || !isActive(service.id);
+}
+
+function renderProxyHint() {
+  $('frontend-proxy-hint').textContent = $('frontend-auto-proxy').checked ? `${$('frontend-proxy-variable').value || 'VUE_APP_BASE_API_TARGET'} = http://localhost:${$('port').value}` : '使用前端环境变量或项目中的代理配置';
 }
 
 function logLevel(line) { return line.level || (line.source === 'system' ? 'system' : 'info'); }
@@ -427,6 +522,9 @@ function render() {
 function addProject(copy = false) {
   if (dirty && !confirm('当前配置尚未保存，确定新建吗？')) return;
   draft = copy && draft ? { ...structuredClone(draft), id: '', name: `${draft.name} 副本` } : blankProject();
+  frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  logSide = 'backend';
+  ++logLoadVersion;
   current = null;
   dirty = true;
   autoName = '';
@@ -441,6 +539,7 @@ async function saveCurrent() {
   readForm();
   const saved = await SaveProject(draft);
   draft = structuredClone(saved);
+  frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
   current = saved.id;
   dirty = false;
   autoName = '';
@@ -467,6 +566,11 @@ async function act(action) {
     } else if (action === 'rebuild') {
       const saved = dirty || !draft.id ? await saveCurrent() : draft;
       await RebuildProject(saved.id);
+    } else if (action === 'service-start') {
+      const saved = dirty || !draft.id ? await saveCurrent() : draft;
+      await StartService(logSide === 'frontend' ? `${saved.id}:frontend` : saved.id);
+    } else if (action === 'service-stop') {
+      await StopService(logServiceID());
     }
   } catch (error) { notify(error, true); }
   finally { if (id) pendingProjects.delete(id); renderHeader(); renderList(); }
@@ -517,11 +621,32 @@ async function detect() {
       const option = document.createElement('option'); option.value = script; $('script-options').append(option);
     }
     if (detection.scripts?.length && !detection.scripts.includes($('script').value)) {
-      $('script').value = detection.scripts.includes('dev') ? 'dev' : detection.scripts.includes('serve') ? 'serve' : detection.scripts[0];
+      $('script').value = detection.script || detection.scripts[0];
     }
     readForm();
     renderForm();
     renderHeader();
+  } catch (error) { notify(error, true); }
+}
+
+async function detectPairedFrontend(directory) {
+  try {
+    readForm();
+    const detection = await DetectFrontend(directory || $('frontend-directory').value.trim() || draft.directory);
+    frontendDraft = { ...blankFrontend(), ...frontendDraft, ...detection,
+      nodeHome: frontendDraft?.nodeHome || detection.nodeHome || '', toolPath: frontendDraft?.toolPath || detection.toolPath || '',
+      port: draft.frontend?.port || detection.port,
+      environment: frontendDraft?.environment || {}, appArgs: frontendDraft?.appArgs || '' };
+    draft.frontend = frontendDraft;
+    dirty = true;
+    const details = await DetectProject(detection.directory);
+    $('frontend-script-options').replaceChildren();
+    for (const script of details.scripts || []) {
+      const option = document.createElement('option'); option.value = script; $('frontend-script-options').append(option);
+    }
+    renderForm();
+    renderHeader();
+    notify(`已识别前端：${detection.script}`);
   } catch (error) { notify(error, true); }
 }
 
@@ -539,10 +664,19 @@ function bind() {
   $('stop').onclick = () => act('stop');
   $('restart').onclick = () => act('restart');
   $('rebuild').onclick = () => act('rebuild');
-  $('open-browser').onclick = () => BrowserOpenURL(`http://127.0.0.1:${draft.port}`);
+  $('service-start').onclick = () => act('service-start');
+  $('service-stop').onclick = () => act('service-stop');
+  $('open-browser').onclick = () => BrowserOpenURL(`http://127.0.0.1:${draft.frontend?.port || draft.port}`);
   $('browse-directory').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('directory').value = path; dirty = true; await detect(); } } catch (error) { notify(error, true); } };
   $('browse-java').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('java-home').value = path; dirty = true; } } catch (error) { notify(error, true); } };
   $('browse-tool').onclick = async () => { try { const path = await PickToolFile(); if (path) { $('tool-path').value = path; dirty = true; } } catch (error) { notify(error, true); } };
+  for (const [button, input, file] of [['browse-node', 'node-home', false], ['browse-node-tool', 'node-tool', true], ['browse-frontend-node', 'frontend-node-home', false], ['browse-frontend-tool', 'frontend-tool', true]]) {
+    $(button).onclick = async () => { try { const path = await (file ? PickToolFile() : PickDirectory()); if (path) { $(input).value = path; dirty = true; } } catch (error) { notify(error, true); } };
+  }
+  $('detect-frontend').onclick = () => detectPairedFrontend();
+  $('browse-frontend').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('frontend-directory').value = path; dirty = true; await detectPairedFrontend(path); } } catch (error) { notify(error, true); } };
+  $('frontend-enabled').addEventListener('change', () => { try { readForm(); renderForm(); renderHeader(); renderLogs(); } catch (error) { notify(error, true); } });
+  $('frontend-directory').addEventListener('change', () => detectPairedFrontend());
   $('reuse-java').onclick = () => openReuseDialog('javaHome');
   $('reuse-tool').onclick = () => openReuseDialog('toolPath');
   $('reuse-close').onclick = () => $('reuse-dialog').close();
@@ -551,7 +685,7 @@ function bind() {
   $('directory').addEventListener('change', detect);
   $('kind').addEventListener('change', () => { readForm(); renderForm(); renderHeader(); });
   document.querySelectorAll('.settings input, .settings select, .settings textarea').forEach((el) => {
-    el.addEventListener('input', () => { dirty = true; if (el.id === 'name') autoName = ''; if (el.id === 'name' || el.id === 'port') { readForm(); renderHeader(); } $('save').textContent = '保存更改'; });
+    el.addEventListener('input', () => { dirty = true; if (el.id === 'name') autoName = ''; if (el.id === 'name' || el.id === 'port') { try { readForm(); renderHeader(); } catch (error) { notify(error, true); } } if (['port', 'frontend-auto-proxy', 'frontend-proxy-variable'].includes(el.id)) renderProxyHint(); $('save').textContent = '保存更改'; });
   });
   $('log-search').addEventListener('input', renderLogs);
   $('toggle-config').onclick = () => setConfigOpen(!configOpen);
@@ -590,23 +724,24 @@ function bind() {
     if (isNewRun(statuses.get(status.id), status)) {
       alertedRuns.delete(status.id);
       projectProblems.delete(status.id);
-      if (draft?.id === status.id) { logs = []; renderLogs(); }
+      if (logServiceID() === status.id) { logs = []; renderLogs(); }
     }
     statuses.set(status.id, status);
     renderList();
-    if (draft?.id === status.id) { renderHeader(); renderForm(); }
+    if (draft && serviceIDs(draft).includes(status.id)) { renderHeader(); if (!dirty) renderForm(); }
   });
   EventsOn('project:log', ({ id, line }) => {
     const level = logLevel(line);
     if (level === 'error' || (level === 'warn' && !projectProblems.has(id))) {
-      if (projectProblems.get(id) !== 'error') { projectProblems.set(id, level); renderList(); }
+      if (projectProblems.get(id) !== 'error') { projectProblems.set(id, level); renderList(); if (draft && serviceIDs(draft).includes(id)) renderHeader(); }
     }
     if (level === 'error' && !alertedRuns.has(id)) {
       alertedRuns.add(id);
-      const projectName = projects.find((project) => project.id === id)?.name || '项目';
+      const parent = projects.find((project) => serviceIDs(project).includes(id));
+      const projectName = parent ? `${parent.name}${id.endsWith(':frontend') ? ' · 前端' : ' · 后端'}` : '项目';
       notify(`${projectName} 检测到运行错误，请查看重点日志`, true);
     }
-    if (draft?.id !== id) return;
+    if (logServiceID() !== id) return;
     logs.push(line);
     if (logs.length > 2500) logs = logs.slice(-2000);
     renderIssue();

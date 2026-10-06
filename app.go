@@ -34,6 +34,8 @@ type Project struct {
 	JVMArgs        string            `json:"jvmArgs"`
 	AppArgs        string            `json:"appArgs"`
 	Environment    map[string]string `json:"environment"`
+	NodeHome       string            `json:"nodeHome"`
+	Frontend       *FrontendConfig   `json:"frontend,omitempty"`
 }
 
 type Detection struct {
@@ -44,6 +46,7 @@ type Detection struct {
 	Scripts        []string `json:"scripts"`
 	Module         string   `json:"module"`
 	Modules        []string `json:"modules"`
+	Script         string   `json:"script"`
 }
 
 type LogLine struct {
@@ -71,6 +74,8 @@ type App struct {
 	history    map[string][]LogLine
 	statuses   map[string]Status
 	configPath string
+	groupMu    sync.Mutex
+	closing    bool // guarded by groupMu
 }
 
 func NewApp() *App {
@@ -99,6 +104,9 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.groupMu.Lock()
+	defer a.groupMu.Unlock()
+	a.closing = true
 	a.mu.Lock()
 	runs := make([]*run, 0, len(a.runs))
 	for _, r := range a.runs {
@@ -163,6 +171,8 @@ func (a *App) ListProjects() []Project {
 }
 
 func (a *App) SaveProject(p Project) (Project, error) {
+	a.groupMu.Lock()
+	defer a.groupMu.Unlock()
 	if strings.TrimSpace(p.Directory) == "" {
 		return Project{}, errors.New("请选择项目目录")
 	}
@@ -190,6 +200,23 @@ func (a *App) SaveProject(p Project) (Project, error) {
 	}
 	if p.Kind == "node" && p.Script == "" {
 		return Project{}, errors.New("请选择 package.json 脚本")
+	}
+	if p.Kind == "node" && p.Frontend != nil {
+		return Project{}, errors.New("配套前端只能关联到后端项目")
+	}
+	if p.NodeHome != "" {
+		path, err := filepath.Abs(p.NodeHome)
+		if err != nil || !exists(filepath.Join(path, "node.exe")) {
+			return Project{}, errors.New("Node.js 目录无效，需要包含 node.exe")
+		}
+		p.NodeHome = filepath.Clean(path)
+	}
+	if p.Frontend != nil {
+		frontend, err := validateFrontend(*p.Frontend, p.Port)
+		if err != nil {
+			return Project{}, err
+		}
+		p.Frontend = &frontend
 	}
 	if p.ConfigFile != "" {
 		path, err := filepath.Abs(p.ConfigFile)
@@ -221,7 +248,7 @@ func (a *App) SaveProject(p Project) (Project, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, active := a.runs[p.ID]; active {
+	if a.runs[p.ID] != nil || a.runs[frontendID(p.ID)] != nil {
 		return Project{}, errors.New("请先停止项目，再修改配置")
 	}
 	previous, existed := a.projects[p.ID]
@@ -238,9 +265,11 @@ func (a *App) SaveProject(p Project) (Project, error) {
 }
 
 func (a *App) DeleteProject(id string) error {
+	a.groupMu.Lock()
+	defer a.groupMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, active := a.runs[id]; active {
+	if a.runs[id] != nil || a.runs[frontendID(id)] != nil {
 		return errors.New("请先停止项目")
 	}
 	p, found := a.projects[id]
@@ -254,6 +283,8 @@ func (a *App) DeleteProject(id string) error {
 	}
 	delete(a.history, id)
 	delete(a.statuses, id)
+	delete(a.history, frontendID(id))
+	delete(a.statuses, frontendID(id))
 	return nil
 }
 
@@ -343,6 +374,17 @@ func (a *App) DetectProject(directory string) (Detection, error) {
 		d.Scripts = append(d.Scripts, script)
 	}
 	sort.Strings(d.Scripts)
+	for _, script := range []string{"dev:vite", "dev", "serve", "start"} {
+		if command, ok := pkg.Scripts[script]; ok {
+			d.Script = script
+			if strings.Contains(command, "vite") {
+				d.PortMode = "vite"
+			} else if strings.Contains(command, "vue-cli-service") {
+				d.PortMode = "vue-cli"
+			}
+			break
+		}
+	}
 	return d, nil
 }
 

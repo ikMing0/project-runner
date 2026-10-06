@@ -24,7 +24,7 @@ func buildCommand(p Project) (commandSpec, error) {
 		}
 		spec.Env = append(spec.Env, key+"="+value)
 	}
-	if p.JavaHome != "" {
+	if p.Kind != "node" && p.JavaHome != "" {
 		if !exists(filepath.Join(p.JavaHome, "bin", "java.exe")) {
 			return spec, fmt.Errorf("JDK 路径无效: %s", p.JavaHome)
 		}
@@ -32,6 +32,12 @@ func buildCommand(p Project) (commandSpec, error) {
 		spec.Env = append(spec.Env, "PATH="+filepath.Join(p.JavaHome, "bin")+";"+environmentValue(spec.Env, "PATH"))
 	}
 	if p.Kind == "node" {
+		if p.NodeHome != "" {
+			if !exists(filepath.Join(p.NodeHome, "node.exe")) {
+				return spec, fmt.Errorf("Node.js 目录无效: %s", p.NodeHome)
+			}
+			spec.Env = append(spec.Env, "PATH="+p.NodeHome+";"+environmentValue(spec.Env, "PATH"))
+		}
 		manager := p.PackageManager
 		if manager == "" {
 			manager = "npm"
@@ -40,6 +46,9 @@ func buildCommand(p Project) (commandSpec, error) {
 			return spec, fmt.Errorf("不支持的包管理器: %s", manager)
 		}
 		spec.Executable = manager + ".cmd"
+		if p.ToolPath != "" {
+			spec.Executable = p.ToolPath
+		}
 		spec.Args = []string{"run", p.Script}
 		if manager == "npm" {
 			spec.Args = append(spec.Args, "--")

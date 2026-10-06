@@ -6,6 +6,10 @@ export function DeleteProject(arg1) {
   return window['go']['main']['App']['DeleteProject'](arg1);
 }
 
+export function DetectFrontend(arg1) {
+  return window['go']['main']['App']['DetectFrontend'](arg1);
+}
+
 export function DetectProject(arg1) {
   return window['go']['main']['App']['DetectProject'](arg1);
 }
@@ -50,6 +54,14 @@ export function StartProject(arg1) {
   return window['go']['main']['App']['StartProject'](arg1);
 }
 
+export function StartService(arg1) {
+  return window['go']['main']['App']['StartService'](arg1);
+}
+
 export function StopProject(arg1) {
   return window['go']['main']['App']['StopProject'](arg1);
+}
+
+export function StopService(arg1) {
+  return window['go']['main']['App']['StopService'](arg1);
 }

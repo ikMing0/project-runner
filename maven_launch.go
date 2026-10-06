@@ -15,6 +15,7 @@ type launchPlan struct {
 	BuildDirectory string
 	Next           func() (commandSpec, error)
 	Temporary      []string
+	Cache          *mavenBuildCache
 }
 
 type mavenPOM struct {
@@ -178,7 +179,7 @@ func buildLaunchPlan(p Project, clean bool) (launchPlan, error) {
 		spec.Args = append(spec.Args, "clean")
 	}
 	spec.Args = append(spec.Args, "package", "-Dmaven.test.skip=true", "-Dstyle.color=never")
-	return launchPlan{Build: &spec, BuildDirectory: root, Next: func() (commandSpec, error) {
+	return launchPlan{Build: &spec, BuildDirectory: root, Cache: newMavenBuildCache(root, module, spec, clean), Next: func() (commandSpec, error) {
 		jar, err := mavenArtifact(root, module)
 		if err != nil {
 			return commandSpec{}, err
@@ -199,6 +200,40 @@ func buildLaunchPlan(p Project, clean bool) (launchPlan, error) {
 }
 
 func mavenArtifact(root, module string) (string, error) {
+	jar, err := mavenArtifactPath(root, module)
+	if err != nil {
+		return "", err
+	}
+	reader, err := zip.OpenReader(jar)
+	if err != nil {
+		return "", fmt.Errorf("构建成功，但无法读取启动产物 %s: %w", jar, err)
+	}
+	defer reader.Close()
+	for _, file := range reader.File {
+		if file.Name != "META-INF/MANIFEST.MF" {
+			continue
+		}
+		stream, err := file.Open()
+		if err != nil {
+			return "", err
+		}
+		manifest, err := io.ReadAll(io.LimitReader(stream, 1024*1024))
+		stream.Close()
+		if err != nil {
+			return "", err
+		}
+		// Manifest continuation lines start with a space.
+		text := strings.ReplaceAll(strings.ReplaceAll(string(manifest), "\r\n", "\n"), "\n ", "")
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasPrefix(line, "Main-Class:") && strings.TrimSpace(strings.TrimPrefix(line, "Main-Class:")) != "" {
+				return jar, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s 不是可执行 JAR；请在启动模块配置 spring-boot-maven-plugin 的 repackage", jar)
+}
+
+func mavenArtifactPath(root, module string) (string, error) {
 	var poms []mavenPOM
 	for dir := module; ; dir = filepath.Dir(dir) {
 		if exists(filepath.Join(dir, "pom.xml")) {
@@ -258,32 +293,5 @@ func mavenArtifact(root, module string) (string, error) {
 	if !filepath.IsAbs(directory) {
 		directory = filepath.Join(module, directory)
 	}
-	jar := filepath.Join(directory, name+".jar")
-	reader, err := zip.OpenReader(jar)
-	if err != nil {
-		return "", fmt.Errorf("构建成功，但无法读取启动产物 %s: %w", jar, err)
-	}
-	defer reader.Close()
-	for _, file := range reader.File {
-		if file.Name != "META-INF/MANIFEST.MF" {
-			continue
-		}
-		stream, err := file.Open()
-		if err != nil {
-			return "", err
-		}
-		// Manifest continuation lines start with a space.
-		manifest, err := io.ReadAll(io.LimitReader(stream, 1024*1024))
-		stream.Close()
-		if err != nil {
-			return "", err
-		}
-		text := strings.ReplaceAll(strings.ReplaceAll(string(manifest), "\r\n", "\n"), "\n ", "")
-		for _, line := range strings.Split(text, "\n") {
-			if strings.HasPrefix(line, "Main-Class:") && strings.TrimSpace(strings.TrimPrefix(line, "Main-Class:")) != "" {
-				return jar, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("%s 不是可执行 JAR；请在启动模块配置 spring-boot-maven-plugin 的 repackage", jar)
+	return filepath.Join(directory, name+".jar"), nil
 }

@@ -29,6 +29,19 @@ func TestMain(m *testing.M) {
 
 func helperProcess() int {
 	args := os.Args[1:]
+	if len(args) != 0 && args[0] == "frontend-helper" {
+		values := map[string]string{}
+		for _, key := range []string{"port", "PORT", "VUE_APP_BASE_API_TARGET", "FRONTEND_ONLY", "BACKEND_ONLY"} {
+			values[key] = os.Getenv(key)
+		}
+		data, _ := json.Marshal(values)
+		_ = os.WriteFile(os.Getenv("RUNNER_TEST_ENV"), data, 0600)
+		if os.Getenv("RUNNER_TEST_FRONTEND_FAIL") == "1" {
+			fmt.Fprintln(os.Stderr, "frontend fixture failed")
+			return 11
+		}
+		fmt.Println("frontend fixture ready")
+	}
 	if len(args) != 0 && args[0] == "record" {
 		data, _ := json.Marshal(args[1:])
 		_ = os.WriteFile(os.Getenv("RUNNER_TEST_RECORD"), data, 0600)
@@ -56,6 +69,9 @@ func helperProcess() int {
 		return 0
 	}
 	if len(args) == 0 || args[0] != "child-service" {
+		if len(args) == 0 || args[0] != "frontend-helper" {
+			fmt.Println("backend fixture ready")
+		}
 		data, _ := json.Marshal(args)
 		_ = os.WriteFile(os.Getenv("RUNNER_TEST_RUN_ARGS"), data, 0600)
 	}
@@ -395,18 +411,40 @@ func TestRealMavenBuildOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cmd, err := managedCommand(*plan.Build)
-		if err != nil {
-			t.Fatal(err)
-		}
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("reactor build failed: %v\n%s", err, output)
+		needed, reason := plan.Cache.needsBuild()
+		t.Log(reason)
+		if needed {
+			if err := checkMavenArtifactUnlocked(plan.Cache.root, plan.Cache.module); err != nil {
+				t.Fatal(err)
+			}
+			if err := plan.Cache.invalidate(); err != nil {
+				t.Fatal(err)
+			}
+			cmd, err := managedCommand(*plan.Build)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("reactor build failed: %v\n%s", err, output)
+			}
+			if err := plan.Cache.record(); err != nil {
+				t.Fatal(err)
+			}
 		}
 		spec, err := plan.Next()
 		if err != nil {
 			t.Fatal(err)
 		}
+		checkStarted := time.Now()
+		unchanged, err := buildLaunchPlan(p, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if needed, reason := unchanged.Cache.needsBuild(); needed {
+			t.Fatalf("verified workspace not reusable: %s", reason)
+		}
+		t.Logf("Unchanged-input check completed in %s; next launch skips Maven", time.Since(checkStarted).Round(time.Millisecond))
 		t.Logf("Reactor build succeeded; runtime executable=%s (not started)", spec.Executable)
 		return
 	}

@@ -46,12 +46,10 @@ func (r *run) stop() {
 	})
 }
 
-func (a *App) StartProject(id string) error { return a.startProject(id, false) }
-
 func (a *App) startProject(id string, clean bool) error {
 	started := time.Now()
 	a.mu.Lock()
-	p, found := a.projects[id]
+	p, found := a.projectLocked(id)
 	if !found {
 		a.mu.Unlock()
 		return errors.New("项目不存在")
@@ -62,19 +60,17 @@ func (a *App) startProject(id string, clean bool) error {
 	}
 	usesPort := p.Kind != "node" || p.PortMode != "none"
 	for otherID := range a.runs {
-		other := a.projects[otherID]
+		other, _ := a.projectLocked(otherID)
 		if usesPort && (other.Kind != "node" || other.PortMode != "none") && otherID != id && other.Port == p.Port {
 			a.mu.Unlock()
 			return fmt.Errorf("端口 %d 已被另一个运行实例使用", p.Port)
 		}
 	}
 	if usesPort {
-		listener, err := net.Listen("tcp", ":"+strconv.Itoa(p.Port))
-		if err != nil {
+		if err := checkPortAvailable(p.Port); err != nil {
 			a.mu.Unlock()
 			return fmt.Errorf("端口 %d 已被占用: %w", p.Port, err)
 		}
-		_ = listener.Close()
 	}
 	plan, err := buildLaunchPlan(p, clean)
 	if err != nil {
@@ -97,7 +93,9 @@ func (a *App) startProject(id string, clean bool) error {
 	r := &run{started: started, job: job, done: make(chan struct{}), temporary: plan.Temporary, buildDirectory: plan.BuildDirectory}
 	a.runs[id], a.history[id] = r, nil
 	state := "starting"
-	if plan.Build != nil {
+	if plan.Cache != nil {
+		state = "checking"
+	} else if plan.Build != nil {
 		state = "building"
 	}
 	status := Status{ID: id, State: state, StartedAt: started.UnixMilli()}
@@ -112,10 +110,36 @@ func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
 	phase := "启动"
 	var cmd *exec.Cmd
 	var err error
-	if plan.Build != nil {
+	build := plan.Build
+	if plan.Cache != nil {
+		phase = "检查"
+		a.appendLog(id, "system", "检查当前工作树的构建输入和启动产物")
+		needed, reason := plan.Cache.needsBuild()
+		a.appendLog(id, "system", reason)
+		if !needed {
+			build = nil
+		} else {
+			err = checkMavenArtifactUnlocked(plan.Cache.root, plan.Cache.module)
+			if err == nil {
+				err = plan.Cache.invalidate()
+			}
+			if plan.Cache.cleanRequired {
+				prepared := *build
+				prepared.Args = append([]string{}, build.Args...)
+				for i := len(prepared.Args) - 1; i >= 0; i-- {
+					if prepared.Args[i] == "package" {
+						prepared.Args = append(append(prepared.Args[:i:i], "clean"), prepared.Args[i:]...)
+						break
+					}
+				}
+				build = &prepared
+			}
+		}
+	}
+	if err == nil && build != nil {
 		phase = "构建"
 		a.appendLog(id, "system", "构建当前工作树及依赖模块: "+plan.BuildDirectory)
-		cmd, err = a.executeStage(id, p, r, *plan.Build, "building")
+		cmd, err = a.executeStage(id, p, r, *build, "building")
 	}
 	if err == nil {
 		r.mu.Lock()
@@ -130,7 +154,12 @@ func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
 		var spec commandSpec
 		spec, err = plan.Next()
 		if err == nil {
-			if plan.Build != nil {
+			if build != nil {
+				if plan.Cache != nil {
+					if cacheErr := plan.Cache.record(); cacheErr != nil {
+						a.appendLog(id, "system", "未保存构建复用记录，下一次将重新构建: "+cacheErr.Error())
+					}
+				}
 				a.appendLog(id, "system", "构建成功，启动当前工作树的产物")
 			}
 			cmd, err = a.executeStage(id, p, r, spec, "starting")
@@ -263,9 +292,7 @@ func waitForJobExit(job windows.Handle) {
 func waitForPortRelease(port int) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-		if err == nil {
-			_ = listener.Close()
+		if checkPortAvailable(port) == nil {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -392,7 +419,7 @@ func (a *App) emitStatus(status Status) {
 	}
 }
 
-func (a *App) StopProject(id string) error {
+func (a *App) stopService(id string) error {
 	a.mu.Lock()
 	r := a.runs[id]
 	a.mu.Unlock()
@@ -401,29 +428,6 @@ func (a *App) StopProject(id string) error {
 	}
 	r.stop()
 	return nil
-}
-
-func (a *App) RestartProject(id string) error { return a.restartProject(id, false) }
-
-func (a *App) RebuildProject(id string) error {
-	a.mu.Lock()
-	p, found := a.projects[id]
-	a.mu.Unlock()
-	if !found || p.Kind != "spring-maven" {
-		return errors.New("重新构建仅适用于 Maven 项目")
-	}
-	return a.restartProject(id, true)
-}
-
-func (a *App) restartProject(id string, clean bool) error {
-	a.mu.Lock()
-	r := a.runs[id]
-	a.mu.Unlock()
-	if r != nil {
-		r.stop()
-		<-r.done
-	}
-	return a.startProject(id, clean)
 }
 
 func cleanTemporary(files []string) {
