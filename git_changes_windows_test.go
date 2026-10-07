@@ -33,7 +33,7 @@ func gitFixture(t *testing.T) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("Git unavailable")
 	}
-	root := t.TempDir()
+	root := canonicalTestTempDir(t)
 	gitFixtureCommand(t, root, "init", "-b", "main")
 	gitFixtureCommand(t, root, "config", "user.email", "test@example.invalid")
 	gitFixtureCommand(t, root, "config", "user.name", "Git view test")
@@ -149,7 +149,7 @@ func TestGitLinkedWorktreeDetachedAndUnbornBranch(t *testing.T) {
 	gitFixtureFile(t, root, "file.txt", "base\n")
 	gitFixtureCommand(t, root, "add", ".")
 	gitFixtureCommand(t, root, "commit", "-m", "initial")
-	linked := filepath.Join(t.TempDir(), "linked")
+	linked := filepath.Join(canonicalTestTempDir(t), "linked")
 	gitFixtureCommand(t, root, "worktree", "add", "-b", "feature", linked)
 	gitFixtureFile(t, linked, "file.txt", "branch change\n")
 	view, err := app.GetGitChanges(linked)

@@ -19,7 +19,7 @@ var terminalEscape = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1
 
 func terminalTestApp(t *testing.T) *App {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "终端 工作树")
+	dir := filepath.Join(canonicalTestTempDir(t), "终端 工作树")
 	front := filepath.Join(dir, "frontend")
 	if err := os.MkdirAll(front, 0700); err != nil {
 		t.Fatal(err)
