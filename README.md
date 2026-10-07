@@ -55,6 +55,29 @@ wails build -clean -o ProjectRunner.exe
 
 产物位于 `build\bin\ProjectRunner.exe`。
 
+## 发布 GitHub Release
+
+仓库提供 `.github/workflows/release.yml`。提交并推送代码后，再推送 `v主版本.次版本.修订版本` 标签即可自动发布：
+
+```powershell
+git tag -a v0.1.0 -m "ProjectRunner v0.1.0"
+git push origin v0.1.0
+```
+
+请确认标签指向已推送、准备发布的提交；每个版本使用新标签。普通分支 push 不发布 Release。`v0.1.0-beta.1` 等带后缀的标签会标为预发布，不设为 Latest。
+
+工作流在 Windows x64 环境中安装 `go.mod` 对应的 Wails CLI 和 Node.js 22，通过 `npm ci` 安装锁定依赖，重新生成绑定，执行前端测试、Go 测试、`go vet` 并打包。全部通过后，发布任务再次验证 SHA256，再创建 Release，附上 `ProjectRunner.exe` 和 `SHA256SUMS.txt`；说明包含运行要求、源码提交和 GitHub 自动生成的更新记录。已有同名 Release 时不会覆盖。
+
+在 GitHub 的 Actions 页面选择 **Windows Release → Run workflow** 可以手动验证构建；手动运行仅保存构建附件，不创建 Release。构建附件保留 14 天。发布使用 GitHub Actions 自带的 `GITHUB_TOKEN`，无需上传本机 SSH 私钥或额外配置个人 Token。仓库需要启用 Actions，并允许本工作流使用的 GitHub 官方 Actions 和发布任务的 `contents: write` 权限。
+
+本机也可用 PowerShell 7 执行相同测试与打包流程（不会上传或发布）：
+
+```powershell
+pwsh -File scripts/build-release.ps1 -Version v0.1.0
+```
+
+产物位于 `build\bin\release\`；Wails 不在 PATH 时可用 `-WailsExecutable` 指定 CLI 文件路径。下载程序的系统要求与上文一致，发布包不包含本机项目配置、日志、终端会话或业务项目文件。
+
 ## 当前范围
 
 启动方式以本地开发为主，目前没有 Docker、SSH 或直接选择已有 JAR 的运行模式。Maven 启动流程自动构建并运行产物；停止、取消、构建失败、多工作树、前后端配对和 Windows 路径行为均有进程级回归测试。Vue 开发服务器保留自身的热更新能力。配置 JDK、构建工具和启动模块后即可使用；运行时仍需项目自己的数据库、Redis 等环境。
