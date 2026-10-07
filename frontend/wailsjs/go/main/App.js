@@ -22,6 +22,14 @@ export function GetCodexOptions(arg1) {
   return window['go']['main']['App']['GetCodexOptions'](arg1);
 }
 
+export function GetGitChanges(arg1) {
+  return window['go']['main']['App']['GetGitChanges'](arg1);
+}
+
+export function GetGitFileDiff(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetGitFileDiff'](arg1, arg2, arg3);
+}
+
 export function GetLogs(arg1) {
   return window['go']['main']['App']['GetLogs'](arg1);
 }
@@ -60,6 +68,10 @@ export function PickDirectory() {
 
 export function PickToolFile() {
   return window['go']['main']['App']['PickToolFile']();
+}
+
+export function ReadIDEAConfigurations(arg1) {
+  return window['go']['main']['App']['ReadIDEAConfigurations'](arg1);
 }
 
 export function RebuildProject(arg1) {

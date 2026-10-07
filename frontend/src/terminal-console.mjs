@@ -6,12 +6,13 @@ import { TerminalStream, splitTerminalInput } from './terminal-stream.mjs';
 const $ = (id) => document.getElementById(id);
 
 export class TerminalConsole {
-  constructor({ api, prepare, notify, onLogs, onLayout, events }) {
+  constructor({ api, prepare, notify, onLogs, onLayout, events, onRender = () => {} }) {
     this.api = api;
     this.prepare = prepare;
     this.notify = notify;
     this.onLogs = onLogs;
     this.onLayout = onLayout;
+    this.onRender = onRender;
     this.context = null;
     this.entries = new Map();
     this.views = new Map();
@@ -257,6 +258,7 @@ export class TerminalConsole {
     const layout = `${this.context?.projectId}/${this.context?.paired}/${visible}`;
     if (this.layout !== layout) { this.layout = layout; this.onLayout(); }
     this.scheduleFit();
+    this.onRender();
   }
 
   scheduleFit() {

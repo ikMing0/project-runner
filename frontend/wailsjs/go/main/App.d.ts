@@ -12,6 +12,10 @@ export function DetectProject(arg1:string):Promise<main.Detection>;
 
 export function GetCodexOptions(arg1:string):Promise<main.CodexOptions>;
 
+export function GetGitChanges(arg1:string):Promise<main.GitChanges>;
+
+export function GetGitFileDiff(arg1:string,arg2:string,arg3:string):Promise<main.GitFileDiff>;
+
 export function GetLogs(arg1:string):Promise<Array<main.LogLine>>;
 
 export function GetStatuses():Promise<Array<main.Status>>;
@@ -31,6 +35,8 @@ export function PickConfigFile():Promise<string>;
 export function PickDirectory():Promise<string>;
 
 export function PickToolFile():Promise<string>;
+
+export function ReadIDEAConfigurations(arg1:string):Promise<main.IDEAImport>;
 
 export function RebuildProject(arg1:string):Promise<void>;
 

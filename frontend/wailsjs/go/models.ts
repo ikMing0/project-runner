@@ -112,6 +112,144 @@ export namespace main {
 	        this.proxyVariable = source["proxyVariable"];
 	    }
 	}
+	export class GitChange {
+	    path: string;
+	    oldPath?: string;
+	    indexStatus: string;
+	    worktreeStatus: string;
+	    staged: boolean;
+	    unstaged: boolean;
+	    untracked: boolean;
+	    conflict: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitChange(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.oldPath = source["oldPath"];
+	        this.indexStatus = source["indexStatus"];
+	        this.worktreeStatus = source["worktreeStatus"];
+	        this.staged = source["staged"];
+	        this.unstaged = source["unstaged"];
+	        this.untracked = source["untracked"];
+	        this.conflict = source["conflict"];
+	    }
+	}
+	export class GitChanges {
+	    root: string;
+	    branch: string;
+	    detached: boolean;
+	    files: GitChange[];
+
+	    static createFrom(source: any = {}) {
+	        return new GitChanges(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.root = source["root"];
+	        this.branch = source["branch"];
+	        this.detached = source["detached"];
+	        this.files = this.convertValues(source["files"], GitChange);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class GitFileDiff {
+	    text: string;
+	    binary: boolean;
+	    truncated: boolean;
+	    untracked: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new GitFileDiff(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	        this.binary = source["binary"];
+	        this.truncated = source["truncated"];
+	        this.untracked = source["untracked"];
+	    }
+	}
+	export class IDEAConfiguration {
+	    id: string;
+	    name: string;
+	    source: string;
+	    kind: string;
+	    values: Record<string, any>;
+	    warnings: string[];
+	    mainClass?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new IDEAConfiguration(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.source = source["source"];
+	        this.kind = source["kind"];
+	        this.values = source["values"];
+	        this.warnings = source["warnings"];
+	        this.mainClass = source["mainClass"];
+	    }
+	}
+	export class IDEAImport {
+	    directory: string;
+	    configurations: IDEAConfiguration[];
+	    warnings: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new IDEAImport(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.directory = source["directory"];
+	        this.configurations = this.convertValues(source["configurations"], IDEAConfiguration);
+	        this.warnings = source["warnings"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class LogLine {
 	    time: string;
 	    source: string;

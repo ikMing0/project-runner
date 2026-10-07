@@ -70,11 +70,34 @@ export function parseAnsiLog(value) {
   return { text: runs.map(run => run.text).join(''), runs };
 }
 
-export function renderAnsiLog(element, runs) {
+export function logLinks(text) {
+  const links = [];
+  for (const match of text.matchAll(/\bhttps?:\/\/[^\s<>"'`，。；：！？、（）【】《》]+/gi)) {
+    let url = match[0];
+    // Log messages often wrap a URL in brackets or end it with punctuation.
+    // Keep balanced brackets, including IPv6 hosts and parentheses in paths.
+    while (url) {
+      const last = url.at(-1);
+      const opening = { ')': '(', ']': '[', '}': '{' }[last];
+      if (/[.,;:!?，。；：！？、…）】》]/.test(last) ||
+          (opening && url.split(last).length > url.split(opening).length)) url = url.slice(0, -1);
+      else break;
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname && ['http:', 'https:'].includes(parsed.protocol) && !url.includes('\\')) {
+        links.push({ start: match.index, end: match.index + url.length, url });
+      }
+    } catch { /* Invalid addresses stay ordinary log text. */ }
+  }
+  return links;
+}
+
+export function renderAnsiLog(element, runs, openURL) {
   const document = element.ownerDocument;
-  element.replaceChildren(...runs.map(run => {
+  function styledSpan(run, text) {
     const span = document.createElement('span');
-    span.textContent = run.text;
+    span.textContent = text;
     const foreground = run.inverse ? (run.background || palette[0]) : run.foreground;
     const background = run.inverse ? (run.foreground || palette[7]) : run.background;
     if (foreground) span.style.color = foreground;
@@ -84,5 +107,46 @@ export function renderAnsiLog(element, runs) {
     if (run.italic) span.style.fontStyle = 'italic';
     if (run.underline) span.style.textDecoration = 'underline';
     return span;
-  }));
+  }
+  if (typeof openURL !== 'function') {
+    element.replaceChildren(...runs.map(run => styledSpan(run, run.text)));
+    return;
+  }
+  const text = runs.map(run => run.text).join('');
+  const links = logLinks(text);
+  if (!links.length) {
+    element.replaceChildren(...runs.map(run => styledSpan(run, run.text)));
+    return;
+  }
+  function styledRange(start, end) {
+    const spans = [];
+    let offset = 0;
+    for (const run of runs) {
+      const next = offset + run.text.length;
+      if (next > start && offset < end) spans.push(styledSpan(run, run.text.slice(Math.max(0, start - offset), end - offset)));
+      offset = next;
+      if (offset >= end) break;
+    }
+    return spans;
+  }
+  const children = [];
+  let offset = 0;
+  for (const link of links) {
+    children.push(...styledRange(offset, link.start));
+    const anchor = document.createElement('a');
+    anchor.className = 'log-link';
+    anchor.href = link.url;
+    anchor.title = `用默认浏览器打开 ${link.url}`;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.append(...styledRange(link.start, link.end));
+    anchor.addEventListener('click', event => {
+      event.preventDefault();
+      openURL(link.url);
+    });
+    children.push(anchor);
+    offset = link.end;
+  }
+  children.push(...styledRange(offset, text.length));
+  element.replaceChildren(...children);
 }

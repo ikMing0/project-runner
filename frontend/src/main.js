@@ -1,15 +1,19 @@
 import './style.css';
 import { isNewRun, actionableError, serviceIDs, activeState, groupState, currentAttemptLog, recoveryText } from './run-state.mjs';
 import { TerminalConsole } from './terminal-console.mjs';
+import { GitChangesView } from './git-changes.mjs';
 import { FrontendDirectoryLink } from './frontend-directory.mjs';
 import { moveProject, ProjectOrderController } from './project-order.mjs';
+import { nextProjectPort } from './project-ports.mjs';
+import { ideaChoices, ideaFieldKeys, mergeIDEAConfiguration } from './idea-import.mjs';
 import { codexSelection, codexEfforts, codexEffortLabels } from './codex-selection.mjs';
 import { parseAnsiLog, renderAnsiLog } from './ansi-log.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, ReorderProjects, GetStatuses, GetLogs,
   PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
   NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal,
-  GetCodexOptions, OpenCodexAnalysis,
+  GetCodexOptions, OpenCodexAnalysis, ReadIDEAConfigurations,
+  GetGitChanges, GetGitFileDiff,
 } from '../wailsjs/go/main/App';
 import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
 
@@ -38,7 +42,8 @@ app.innerHTML = `
         <div id="issue-banner" class="issue-banner hidden" role="status" aria-live="polite"><span class="issue-icon">!</span><div class="issue-copy"><strong id="issue-title"></strong><span id="issue-message"></span></div><button id="issue-view" class="button small">查看日志</button></div>
         <div id="content" class="content config-collapsed">
           <section id="settings-panel" class="settings panel">
-            <div class="section-title"><div><h2>启动配置</h2><p>界面设置会在启动时转换为相应参数</p></div><div class="section-actions"><button id="duplicate" class="text-button">复制配置</button><button id="delete" class="text-button destructive">删除</button><button id="save" class="button secondary">保存配置</button></div></div>
+            <div class="section-title"><div><h2>启动配置</h2><p>界面设置会在启动时转换为相应参数</p></div><div class="section-actions"><button id="idea-import" class="text-button" type="button">从 IDEA 导入</button><button id="duplicate" class="text-button">复制配置</button><button id="delete" class="text-button destructive">删除</button><button id="save" class="button secondary">保存配置</button></div></div>
+            <div id="idea-import-hint" class="idea-import-hint hidden" role="status"></div>
             <div class="form-grid">
               <label class="field"><span>显示名称</span><input id="name" placeholder="例如 ruoyi-admin / feature-a"></label>
               <label class="field"><span>启动类型</span><select id="kind"><option value="spring-maven">Spring Boot · Maven</option><option value="spring-gradle">Spring Boot · Gradle</option><option value="node">Vue / Node 脚本</option></select></label>
@@ -82,6 +87,7 @@ app.innerHTML = `
             <div class="log-filterbar"><div class="log-view-controls"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><button id="terminal-toggle" class="terminal-toggle" type="button" aria-controls="terminal-pane" aria-pressed="false"><span aria-hidden="true">&gt;_</span> 终端</button><div class="codex-actions"><button id="codex-analyze" class="terminal-toggle" type="button">Codex 分析</button><button id="codex-settings" class="terminal-toggle" type="button" aria-label="Codex 分析设置" title="模型与推理强度">▾</button></div></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span><span id="terminal-shortcuts" class="hidden">Ctrl+C 中断 · Ctrl+V 粘贴</span></div>
             <div id="log-output" class="log-output"><div class="log-placeholder">启动项目后，日志将在这里实时显示。</div></div>
             <div id="terminal-pane" class="terminal-pane hidden"><div class="terminal-tabbar"><div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端标签页"></div><button id="terminal-new" class="button small" type="button">＋ 新标签页</button></div><div id="terminal-workspace" class="terminal-workspace"></div></div>
+            <div id="git-pane" class="git-pane hidden"><div class="git-toolbar"><div><h2 id="git-summary">Git 未提交</h2><p id="git-root"></p></div><span class="git-readonly">只读</span><button id="git-refresh" class="button small" type="button">刷新</button></div><div class="git-workspace"><aside class="git-filelist"><input id="git-search" placeholder="搜索未提交文件" aria-label="搜索未提交文件"><div id="git-files"></div></aside><div class="git-detail"><div class="git-detail-toolbar"><span id="git-file-title">文件差异</span><div><button id="git-working" class="button small" type="button">工作区差异</button><button id="git-staged" class="button small" type="button">已暂存差异</button></div></div><span id="git-diff-note"></span><pre id="git-diff">切换到 Git 查看未提交文件。</pre></div></div></div>
           </section>
         </div>
       </div>
@@ -89,6 +95,7 @@ app.innerHTML = `
   </div>
   <dialog id="reuse-dialog" class="reuse-dialog" aria-labelledby="reuse-title"><div class="reuse-dialog-head"><div><h2 id="reuse-title">复用配置</h2><p>选择已保存项目中的路径</p></div><button id="reuse-close" class="button small" type="button" aria-label="关闭">✕</button></div><div id="reuse-options" class="reuse-options"></div></dialog>
   <dialog id="codex-dialog" class="reuse-dialog" aria-labelledby="codex-title"><div class="reuse-dialog-head"><div><h2 id="codex-title">Codex 分析设置</h2><p>定位启动 / 编译错误，只读分析，输出简短建议</p></div><button id="codex-close" class="button small" type="button" aria-label="关闭 Codex 设置">✕</button></div><div class="codex-form"><label class="field"><span>模型（留空自动选择 CLI 可用模型）</span><input id="codex-model" list="codex-model-options" placeholder="自动选择 CLI 可用模型"><datalist id="codex-model-options"></datalist></label><label class="field"><span>推理强度</span><select id="codex-effort"></select></label><p id="codex-cli-hint" class="field-hint"></p><p class="field-hint">默认低强度，先看异常链，必要时查相关源码。每次分析最多带入最近 400 行日志；可在终端继续追问。</p><button id="codex-save" class="button primary" type="button">保存设置</button></div></dialog>
+  <dialog id="idea-dialog" class="reuse-dialog" aria-labelledby="idea-title"><div class="reuse-dialog-head"><div><h2 id="idea-title">选择 IDEA 运行配置</h2><p>导入到当前表单，保存后生效</p></div><button id="idea-close" class="button small" type="button" aria-label="取消 IDEA 导入">✕</button></div><div class="codex-form"><label class="field"><span>主运行配置</span><select id="idea-primary"></select></label><label id="idea-frontend-field" class="field"><span>配套前端</span><select id="idea-frontend"></select></label><p id="idea-selection-hint" class="field-hint"></p><button id="idea-apply" class="button primary" type="button">导入所选配置</button></div></dialog>
   <div id="toast" class="toast hidden"></div>
 `;
 
@@ -103,6 +110,12 @@ const terminalUI = new TerminalConsole({
   onLogs: () => { if (draft) { renderHeader(); renderLogs(); } },
   onLayout: () => { if (draft && configOpen) setLogHeight(preferredLogHeight); },
   events: EventsOn,
+  onRender: () => applyOutputView(),
+});
+const gitUI = new GitChangesView({
+  api: { GetGitChanges, GetGitFileDiff },
+  directory: () => logSide === 'frontend' && draft?.frontend ? $('frontend-directory').value.trim() : $('directory').value.trim(),
+  onChange: () => { if (draft) renderHeader(); },
 });
 
 function terminalContext() {
@@ -118,8 +131,14 @@ const projectOrderUI = new ProjectOrderController($('project-list'), { onMove: r
 let logSide = 'backend';
 let logLoadVersion = 0;
 let logs = [];
+let gitVisible = false;
 let dirty = false;
 let autoName = '';
+let suggestedProjectPort;
+const ideaEditedFields = new Set();
+let ideaRequestVersion = 0;
+let ideaContext = null;
+let ideaImportedDirectory = '';
 let toastTimer;
 let logMode = 'focus';
 let groupedLogRows = new Map();
@@ -214,13 +233,13 @@ function setConfigOpen(open) {
 }
 
 function blankProject() {
-  return { id: '', name: '', directory: '', kind: 'spring-maven', port: 8080,
+  return { id: '', name: '', directory: '', kind: 'spring-maven', port: nextProjectPort(projects, 'spring-maven'),
     configFile: '', configProperty: 'application.config.path', javaHome: '', toolPath: '', module: '',
     packageManager: 'npm', script: 'dev', portMode: 'vite', nodeHome: '', jvmArgs: '', appArgs: '', environment: {}, frontend: null };
 }
 
 function blankFrontend() {
-  return { directory: '', port: 82, packageManager: 'npm', script: 'dev:vite', portMode: 'vite', nodeHome: '', toolPath: '',
+  return { directory: '', port: nextProjectPort(projects, 'node', [draft?.port]), packageManager: 'npm', script: 'dev:vite', portMode: 'vite', nodeHome: '', toolPath: '',
     appArgs: '', environment: {}, autoProxy: true, proxyVariable: 'VUE_APP_BASE_API_TARGET' };
 }
 
@@ -229,6 +248,8 @@ function groupActive(project) { return serviceIDs(project).some(isActive); }
 function canStartGroup(project) { return serviceIDs(project).some((id) => !isActive(id)); }
 function serviceProject() { return logSide === 'frontend' && draft?.frontend ? { ...draft.frontend, id: logServiceID(), kind: 'node' } : draft; }
 async function selectLogSide(side) {
+  gitVisible = false;
+  gitUI.reset();
   logSide = side;
   terminalUI.showLogs();
   const version = ++logLoadVersion;
@@ -239,6 +260,14 @@ async function selectLogSide(side) {
   if (version !== logLoadVersion) return;
   logs = lines || [];
   renderLogs();
+}
+
+function openGitChanges() {
+  terminalUI.showLogs();
+  gitVisible = true;
+  renderHeader();
+  renderIssue();
+  gitUI.refresh();
 }
 
 function notify(message, error = false) {
@@ -355,12 +384,16 @@ async function reorderProjectList(sourceID, targetID, position) {
 
 async function selectProject(id) {
   if (dirty && !confirm('当前配置尚未保存，确定切换项目吗？')) return;
+  gitVisible = false;
+  gitUI.reset();
   current = id;
+  resetIDEAImport();
   draft = structuredClone(projects.find((p) => p.id === id));
   frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
   frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
   dirty = false;
   autoName = '';
+  suggestedProjectPort = undefined;
   configOpen = false;
   render();
   await selectLogSide('backend');
@@ -504,23 +537,40 @@ function renderHeader() {
   const status = statuses.get(service.id) || { state: 'stopped' };
   $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(service) ? `端口 ${service.port}` : '未指定端口'}`;
   if (recoveryText(status)) $('log-summary').textContent += ` · ${recoveryText(status)}`;
-  $('service-bar').classList.toggle('hidden', !p.frontend);
+  $('service-bar').classList.remove('hidden');
   $('service-tabs').replaceChildren();
-  if (p.frontend) {
-    for (const [side, id, label] of [['backend', p.id, '后端'], ['frontend', `${p.id}:frontend`, '前端']]) {
+  {
+    const sides = p.frontend ? [['backend', p.id, '后端'], ['frontend', `${p.id}:frontend`, '前端']] : [['backend', p.id, p.kind === 'node' ? '前端' : '后端']];
+    for (const [side, id, label] of sides) {
       const tab = document.createElement('button');
-      tab.className = `service-tab ${logSide === side ? 'selected' : ''}`;
+      tab.className = `service-tab ${!gitVisible && logSide === side ? 'selected' : ''}`;
       tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-selected', String(logSide === side));
+      tab.setAttribute('aria-selected', String(!gitVisible && logSide === side));
       tab.textContent = `${label} · ${recoveryText(statuses.get(id)) || stateText(stateFor(id))}${projectProblems.get(id) === 'error' ? ' · 错误' : ''}`;
       tab.onclick = () => selectLogSide(side).catch((error) => notify(error, true));
       $('service-tabs').append(tab);
     }
   }
+  const gitTab = document.createElement('button');
+  gitTab.className = `service-tab ${gitVisible ? 'selected' : ''}`;
+  gitTab.setAttribute('role', 'tab');
+  gitTab.setAttribute('aria-selected', String(gitVisible));
+  gitTab.textContent = `Git 未提交${gitVisible && gitUI.data ? ` · ${gitUI.data.files.length}` : ''}`;
+  gitTab.onclick = openGitChanges;
+  $('service-tabs').append(gitTab);
   $('service-start').disabled = pending || isActive(service.id);
   $('service-stop').disabled = pending || !isActive(service.id);
   terminalUI.setContext(terminalContext());
+  applyOutputView();
   renderCodexHint();
+}
+
+function applyOutputView() {
+  $('git-pane').classList.toggle('hidden', !gitVisible);
+  document.querySelector('.service-actions').classList.toggle('hidden', gitVisible);
+  document.querySelector('.log-toolbar').classList.toggle('hidden', gitVisible);
+  document.querySelector('.log-filterbar').classList.toggle('hidden', gitVisible);
+  if (gitVisible) { $('log-output').classList.add('hidden'); $('terminal-pane').classList.add('hidden'); }
 }
 
 function renderProxyHint() {
@@ -559,6 +609,7 @@ function matchesLog(line, query) {
 
 function renderIssue() {
   const banner = $('issue-banner');
+  if (gitVisible) { banner.classList.add('hidden'); return; }
   const status = statuses.get(logServiceID());
   const currentLogs = logs.filter((line) => currentAttemptLog(line, status));
   const errors = currentLogs.filter((line) => logLevel(line) === 'error');
@@ -614,7 +665,7 @@ function appendLogRow(line, output) {
   time.textContent = line.time;
   const message = document.createElement('span');
   message.className = 'log-message';
-  renderAnsiLog(message, display.runs);
+  renderAnsiLog(message, display.runs, BrowserOpenURL);
   row.append(time, message);
   if (logMode === 'focus') {
     const badge = document.createElement('span');
@@ -660,8 +711,14 @@ function render() {
 
 function addProject(copy = false) {
   if (dirty && !confirm('当前配置尚未保存，确定新建吗？')) return;
+  gitVisible = false;
+  gitUI.reset();
+  resetIDEAImport();
   draft = copy && draft ? { ...structuredClone(draft), id: '', name: `${draft.name} 副本` } : blankProject();
-  frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  draft.port = nextProjectPort(projects, draft.kind);
+  suggestedProjectPort = draft.port;
+  frontendDraft = draft.frontend ? { ...structuredClone(draft.frontend), port: nextProjectPort(projects, 'node', [draft.port]) } : blankFrontend();
+  if (draft.frontend) draft.frontend = frontendDraft;
   frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
   logSide = 'backend';
   ++logLoadVersion;
@@ -673,6 +730,108 @@ function addProject(copy = false) {
   $('log-search').value = '';
   render();
   $('name').focus();
+  if (draft.port === null || draft.frontend?.port === null) notify('历史端口已到 65535，请手动填写可用端口', true);
+}
+
+function resetIDEAImport() {
+  ideaRequestVersion++;
+  ideaContext = null;
+  ideaImportedDirectory = '';
+  ideaEditedFields.clear();
+  $('idea-import').disabled = false;
+  $('idea-import-hint').replaceChildren();
+  $('idea-import-hint').classList.add('hidden');
+  if ($('idea-dialog').open) $('idea-dialog').close();
+}
+
+function showIDEAImportHint(title, messages = []) {
+  const hint = $('idea-import-hint');
+  hint.replaceChildren();
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  hint.append(heading);
+  for (const text of [...new Set(messages)]) {
+    const item = document.createElement('span');
+    item.textContent = text;
+    hint.append(item);
+  }
+  hint.classList.remove('hidden');
+}
+
+function renderIDEASelectionHint() {
+  const context = ideaContext;
+  if (!context) return;
+  const selected = [
+    context.choices.primary.find(item => item.id === $('idea-primary').value),
+    context.choices.frontend.find(item => item.id === $('idea-frontend').value),
+  ].filter(Boolean);
+  $('idea-selection-hint').textContent = selected.map(item => item.name + ' · ' + item.source).join('；') +
+    (context.force ? '。导入会更新对应字段，请检查后保存。' : '。自动导入保留已手动编辑的字段。');
+}
+
+async function importIDEAConfigurations(force) {
+  if (!draft) return;
+  readForm();
+  const directory = draft.directory;
+  if (!directory || (!force && ideaImportedDirectory === directory)) return;
+  const project = draft;
+  const version = ++ideaRequestVersion;
+  $('idea-import').disabled = true;
+  try {
+    const catalog = await ReadIDEAConfigurations(directory);
+    if (draft !== project || $('directory').value.trim() !== directory || version !== ideaRequestVersion) return;
+    const choices = ideaChoices(catalog, draft.kind);
+    if (!choices.primary.length) {
+      if (catalog.warnings?.length) showIDEAImportHint('IDEA 配置读取提示', catalog.warnings);
+      if (force) notify('未找到可导入的 Spring Boot 或 npm 运行配置');
+      return;
+    }
+    const context = {project, directory, catalog, choices, force, version};
+    ideaContext = context;
+    if (force || choices.primary.length > 1 || choices.frontend.length > 1) {
+      $('idea-primary').replaceChildren(...choices.primary.map(item => new Option(item.name + ' · ' + item.source, item.id)));
+      $('idea-frontend').replaceChildren(new Option('不导入配套前端', ''),
+        ...choices.frontend.map(item => new Option(item.name + ' · ' + item.source, item.id)));
+      $('idea-frontend-field').classList.toggle('hidden', !choices.frontend.length);
+      $('idea-frontend').value = choices.frontend.length === 1 ? choices.frontend[0].id : '';
+      renderIDEASelectionHint();
+      $('idea-dialog').showModal();
+    } else {
+      applyIDEASelection(context, choices.primary[0], choices.frontend[0]);
+    }
+  } catch (error) {
+    if (draft === project && version === ideaRequestVersion) notify('读取 IDEA 配置失败：' + error, true);
+  } finally {
+    if (version === ideaRequestVersion) $('idea-import').disabled = false;
+  }
+}
+
+function applyIDEASelection(context, primary, frontend) {
+  if (!primary || context.project !== draft || context.version !== ideaRequestVersion ||
+      $('directory').value.trim() !== context.directory) {
+    notify('项目目录已变化，请重新读取 IDEA 配置');
+    return;
+  }
+  readForm();
+  const merged = mergeIDEAConfiguration(draft, frontendDraft || blankFrontend(), primary, frontend,
+    projects, ideaEditedFields, context.force);
+  draft = merged.project;
+  frontendDraft = merged.frontend;
+  suggestedProjectPort = undefined;
+  frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
+  ideaImportedDirectory = draft.directory;
+  dirty = true;
+  showIDEAImportHint('已读取 IDEA 配置，请检查后保存',
+    [primary.name + ' · ' + primary.source, frontend ? frontend.name + ' · ' + frontend.source : '',
+      ...(context.catalog.warnings || []), ...merged.messages].filter(Boolean));
+  render();
+  notify('已导入 IDEA 运行配置，保存后生效');
+}
+
+function updateSuggestedProjectPort(kind) {
+  if (draft?.id || suggestedProjectPort === undefined || $('port').value !== String(suggestedProjectPort ?? '')) return;
+  suggestedProjectPort = nextProjectPort(projects, kind);
+  $('port').value = suggestedProjectPort ?? '';
 }
 
 async function saveCurrent() {
@@ -684,6 +843,7 @@ async function saveCurrent() {
   current = saved.id;
   dirty = false;
   autoName = '';
+  suggestedProjectPort = undefined;
   configOpen = false;
   projects = await ListProjects();
   render();
@@ -750,10 +910,11 @@ async function detect() {
       autoName = detection.name;
     }
     if (detection.kind) {
-      $('kind').value = detection.kind;
-      $('manager').value = detection.packageManager || 'npm';
-      $('port-mode').value = detection.portMode || 'none';
-      if (detection.kind === 'spring-maven' && detection.module) $('module').value = detection.module;
+      if (!ideaEditedFields.has('kind')) $('kind').value = detection.kind;
+      updateSuggestedProjectPort($('kind').value);
+      if (!ideaEditedFields.has('packageManager')) $('manager').value = detection.packageManager || 'npm';
+      if (!ideaEditedFields.has('portMode')) $('port-mode').value = detection.portMode || 'none';
+      if (!ideaEditedFields.has('module') && detection.kind === 'spring-maven' && detection.module) $('module').value = detection.module;
       $('module-options').replaceChildren();
       for (const module of detection.modules || []) {
         const option = document.createElement('option'); option.value = module; $('module-options').append(option);
@@ -765,12 +926,13 @@ async function detect() {
     for (const script of detection.scripts || []) {
       const option = document.createElement('option'); option.value = script; $('script-options').append(option);
     }
-    if (detection.scripts?.length && !detection.scripts.includes($('script').value)) {
+    if (!ideaEditedFields.has('script') && detection.scripts?.length && !detection.scripts.includes($('script').value)) {
       $('script').value = detection.script || detection.scripts[0];
     }
     readForm();
     renderForm();
     renderHeader();
+    if (!draft.id) await importIDEAConfigurations(false);
   } catch (error) { notify(error, true); }
 }
 
@@ -786,7 +948,7 @@ async function detectPairedFrontend(directory) {
     if (draft !== project || $('directory').value.trim() !== backendDirectory || $('frontend-directory').value.trim() !== frontendDirectory) return;
     frontendDraft = { ...blankFrontend(), ...frontendDraft, ...detection,
       nodeHome: frontendDraft?.nodeHome || detection.nodeHome || '', toolPath: frontendDraft?.toolPath || detection.toolPath || '',
-      port: draft.frontend?.port || detection.port,
+      port: frontendDraft?.port ?? nextProjectPort(projects, 'node', [draft.port]),
       environment: frontendDraft?.environment || {}, appArgs: frontendDraft?.appArgs || '' };
     draft.frontend = frontendDraft;
     frontendDirectoryLink.reset(draft.directory, frontendDraft.directory);
@@ -805,6 +967,18 @@ function bind() {
   $('add-project').onclick = () => addProject();
   $('empty-add').onclick = () => addProject();
   $('duplicate').onclick = () => addProject(true);
+  $('idea-import').onclick = () => importIDEAConfigurations(true).catch(error => notify(error, true));
+  $('idea-close').onclick = () => $('idea-dialog').close();
+  $('idea-primary').onchange = renderIDEASelectionHint;
+  $('idea-frontend').onchange = renderIDEASelectionHint;
+  $('idea-apply').onclick = () => {
+    const context = ideaContext;
+    if (!context) return;
+    const primary = context.choices.primary.find(item => item.id === $('idea-primary').value);
+    const frontend = context.choices.frontend.find(item => item.id === $('idea-frontend').value);
+    $('idea-dialog').close();
+    applyIDEASelection(context, primary, frontend);
+  };
   $('save').onclick = async () => { try { await saveCurrent(); } catch (error) { notify(error, true); } };
   $('delete').onclick = async () => {
     if (!confirm(`删除“${draft.name}”的运行配置？`)) return;
@@ -819,13 +993,13 @@ function bind() {
   $('service-stop').onclick = () => act('service-stop');
   $('open-browser').onclick = () => BrowserOpenURL(`http://127.0.0.1:${draft.frontend?.port || draft.port}`);
   $('browse-directory').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('directory').value = path; dirty = true; await detect(); } } catch (error) { notify(error, true); } };
-  $('browse-java').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('java-home').value = path; dirty = true; } } catch (error) { notify(error, true); } };
-  $('browse-tool').onclick = async () => { try { const path = await PickToolFile(); if (path) { $('tool-path').value = path; dirty = true; } } catch (error) { notify(error, true); } };
+  $('browse-java').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('java-home').value = path; ideaEditedFields.add('javaHome'); dirty = true; } } catch (error) { notify(error, true); } };
+  $('browse-tool').onclick = async () => { try { const path = await PickToolFile(); if (path) { $('tool-path').value = path; ideaEditedFields.add('toolPath'); dirty = true; } } catch (error) { notify(error, true); } };
   for (const [button, input, file] of [['browse-node', 'node-home', false], ['browse-node-tool', 'node-tool', true], ['browse-frontend-node', 'frontend-node-home', false], ['browse-frontend-tool', 'frontend-tool', true]]) {
-    $(button).onclick = async () => { try { const path = await (file ? PickToolFile() : PickDirectory()); if (path) { $(input).value = path; dirty = true; } } catch (error) { notify(error, true); } };
+    $(button).onclick = async () => { try { const path = await (file ? PickToolFile() : PickDirectory()); if (path) { $(input).value = path; if (ideaFieldKeys[input]) ideaEditedFields.add(ideaFieldKeys[input]); dirty = true; } } catch (error) { notify(error, true); } };
   }
   $('detect-frontend').onclick = () => detectPairedFrontend($('directory').value.trim());
-  $('browse-frontend').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('frontend-directory').value = path; resetFrontendDirectoryLink(); dirty = true; await detectPairedFrontend(path); } } catch (error) { notify(error, true); } };
+  $('browse-frontend').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('frontend-directory').value = path; ideaEditedFields.add('frontend.directory'); resetFrontendDirectoryLink(); dirty = true; await detectPairedFrontend(path); } } catch (error) { notify(error, true); } };
   $('frontend-enabled').addEventListener('change', () => { try { readForm(); renderForm(); renderHeader(); renderLogs(); } catch (error) { notify(error, true); } });
   $('frontend-directory').addEventListener('change', () => detectPairedFrontend());
   $('reuse-java').onclick = () => openReuseDialog('javaHome');
@@ -843,11 +1017,13 @@ function bind() {
       notify('Codex 分析设置已保存');
     } catch (error) { notify(error, true); }
   };
-  $('browse-config').onclick = async () => { try { const path = await PickConfigFile(); if (path) { $('config-file').value = path; dirty = true; } } catch (error) { notify(error, true); } };
-  $('browse-config-dir').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('config-file').value = path; dirty = true; } } catch (error) { notify(error, true); } };
+  $('browse-config').onclick = async () => { try { const path = await PickConfigFile(); if (path) { $('config-file').value = path; ideaEditedFields.add('configFile'); dirty = true; } } catch (error) { notify(error, true); } };
+  $('browse-config-dir').onclick = async () => { try { const path = await PickDirectory(); if (path) { $('config-file').value = path; ideaEditedFields.add('configFile'); dirty = true; } } catch (error) { notify(error, true); } };
   $('directory').addEventListener('change', detect);
-  $('kind').addEventListener('change', () => { readForm(); renderForm(); renderHeader(); });
+  $('port').addEventListener('input', () => { suggestedProjectPort = undefined; });
+  $('kind').addEventListener('change', () => { updateSuggestedProjectPort($('kind').value); readForm(); renderForm(); renderHeader(); });
   document.querySelectorAll('.settings input, .settings select, .settings textarea').forEach((el) => {
+    el.addEventListener('input', () => { if (ideaFieldKeys[el.id]) ideaEditedFields.add(ideaFieldKeys[el.id]); });
     if (el.id === 'directory') el.addEventListener('input', syncFrontendDirectory);
     if (el.id === 'frontend-directory') el.addEventListener('input', resetFrontendDirectoryLink);
     el.addEventListener('input', () => { dirty = true; if (el.id === 'name') autoName = ''; if (el.id === 'name' || el.id === 'port') { try { readForm(); renderHeader(); } catch (error) { notify(error, true); } } if (['port', 'frontend-auto-proxy', 'frontend-proxy-variable'].includes(el.id)) renderProxyHint(); $('save').textContent = '保存更改'; });
