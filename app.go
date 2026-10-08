@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -36,6 +37,10 @@ type Project struct {
 	Environment    map[string]string `json:"environment"`
 	NodeHome       string            `json:"nodeHome"`
 	Frontend       *FrontendConfig   `json:"frontend,omitempty"`
+	Health         *HealthConfig     `json:"health,omitempty"`
+	AutoOpen       bool              `json:"autoOpen,omitempty"`
+	Dependencies   []DependencyCheck `json:"dependencies,omitempty"`
+	WaitForBackend bool              `json:"waitForBackend,omitempty"`
 }
 
 type Detection struct {
@@ -67,6 +72,9 @@ type Status struct {
 	StartupDurationMs *int64 `json:"startupDurationMs,omitempty"`
 	Attempt           int    `json:"attempt,omitempty"`
 	Recovery          string `json:"recovery,omitempty"`
+	SourceChanged     bool   `json:"sourceChanged,omitempty"`
+	SourceMessage     string `json:"sourceMessage,omitempty"`
+	SourceError       string `json:"sourceError,omitempty"`
 }
 
 type App struct {
@@ -83,6 +91,17 @@ type App struct {
 	terminalMu     sync.Mutex
 	terminals      map[string]*terminalSession
 	terminalNumber int
+	archiveMu      sync.Mutex
+	libraryMu      sync.Mutex
+	editorMu       sync.Mutex
+	openedRuns     map[string]int64
+	frontendWaits  map[string]*frontendWait
+	metricsMu      sync.Mutex
+	cpuSamples     map[string]cpuSample
+	desktopMu      sync.Mutex
+	desktop        DesktopSettings
+	tray           *windowsTray
+	forceQuit      atomic.Bool
 }
 
 func NewApp() *App {
@@ -96,6 +115,7 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.configPath = path
+	a.loadDesktopSettings()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -117,6 +137,8 @@ func (a *App) shutdown(ctx context.Context) {
 	a.groupMu.Lock()
 	defer a.groupMu.Unlock()
 	a.closing = true
+	a.cancelFrontendWaits(nil, "运行台关闭，取消前端等待")
+	a.closeTray()
 	a.mu.Lock()
 	runs := make([]*run, 0, len(a.runs))
 	for _, r := range a.runs {
@@ -268,6 +290,14 @@ func (a *App) SaveProject(p Project) (Project, error) {
 		}
 		p.Frontend = &frontend
 	}
+	p.Health, err = validateHealth(p.Health)
+	if err != nil {
+		return Project{}, err
+	}
+	p.Dependencies, err = validateDependencies(p.Dependencies)
+	if err != nil {
+		return Project{}, err
+	}
 	if p.ConfigFile != "" {
 		path, err := filepath.Abs(p.ConfigFile)
 		if err != nil {
@@ -298,7 +328,7 @@ func (a *App) SaveProject(p Project) (Project, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.runs[p.ID] != nil || a.runs[frontendID(p.ID)] != nil {
+	if a.runs[p.ID] != nil || a.runs[frontendID(p.ID)] != nil || a.frontendWaits[frontendID(p.ID)] != nil {
 		return Project{}, errors.New("请先停止项目，再修改配置")
 	}
 	previous, existed := a.projects[p.ID]
@@ -330,7 +360,7 @@ func (a *App) DeleteProject(id string) error {
 	defer a.groupMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.runs[id] != nil || a.runs[frontendID(id)] != nil {
+	if a.runs[id] != nil || a.runs[frontendID(id)] != nil || a.frontendWaits[frontendID(id)] != nil {
 		return errors.New("请先停止项目")
 	}
 	p, found := a.projects[id]

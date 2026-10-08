@@ -8,14 +8,24 @@ import { nextProjectPort } from './project-ports.mjs';
 import { ideaChoices, ideaFieldKeys, mergeIDEAConfiguration } from './idea-import.mjs';
 import { codexSelection, codexEfforts, codexEffortLabels } from './codex-selection.mjs';
 import { parseAnsiLog, renderAnsiLog } from './ansi-log.mjs';
+import { ProjectTools } from './project-tools.mjs';
+import { problemAdvice } from './problem-advice.mjs';
+import { sourceLinks } from './source-links.mjs';
+import { DependencyEditor } from './dependency-editor.mjs';
+import { IDEAJumper } from './idea-jump.mjs';
+import { DesktopTools, metricsText } from './desktop-tools.mjs';
 import {
   ListProjects, SaveProject, DeleteProject, ReorderProjects, GetStatuses, GetLogs,
   PickDirectory, PickConfigFile, PickToolFile, DetectProject, DetectFrontend, StartProject, StopProject, RestartProject, RebuildProject, StartService, StopService,
   NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal,
   GetCodexOptions, OpenCodexAnalysis, ReadIDEAConfigurations,
   GetGitChanges, GetGitFileDiff,
+  CheckProject, ListRunHistory, ReadRunHistory, RunHistoryText,
+  ListTemplates, SaveTemplate, DeleteTemplate, ExportProjectTemplate, ReadTemplateFile, ApplyTemplate,
+  RestartService, OpenSourceInIDEA, GetEditorSettings, SetIDEAPath, PickIDEAPath,
+  GetBuildInfo, CheckForUpdates, GetDesktopSettings, SaveDesktopSettings, HideToTray, QuitApplication, GetProcessMetrics,
 } from '../wailsjs/go/main/App';
-import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
+import { EventsOn, BrowserOpenURL, ClipboardSetText } from '../wailsjs/runtime/runtime';
 
 const app = document.querySelector('#app');
 const browseIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6a2.5 2.5 0 0 1 2.5 2.5v8A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z"/><path d="M3.5 10h17"/></svg>`;
@@ -24,9 +34,10 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="brand"><div class="brand-icon">▶</div><div><strong>项目运行台</strong><small>Windows · 本地运行</small></div></div>
       <button id="add-project" class="button primary full">＋ 添加项目</button>
+      <button id="templates" class="button full templates-button">配置模板 / 导入导出</button>
       <div class="side-label"><span>运行配置</span><span id="project-count">0</span></div>
       <div id="project-list" class="project-list"></div>
-      <div class="side-footer"><span class="pulse-dot"></span>关闭窗口时停止所有项目</div>
+      <div class="side-footer"><div class="desktop-sidebar-actions"><button id="desktop-settings" class="button small" type="button">应用设置 / 更新</button><button id="hide-tray" class="button small" type="button">收起</button></div><div><span class="pulse-dot"></span><span id="close-behavior">关闭窗口时停止所有项目</span></div></div>
     </aside>
     <main class="main">
       <div id="empty-state" class="empty-state">
@@ -37,9 +48,11 @@ app.innerHTML = `
       <div id="project-view" class="project-view hidden">
         <header class="project-header">
           <div><div class="eyebrow" id="header-kind">运行配置</div><h1 id="header-name">项目</h1><p id="header-path"></p></div>
-          <div class="header-actions"><span id="status-pill" class="status-pill">未运行</span><button id="start" class="button primary">▶ 启动</button><button id="restart" class="button">↻ 重启</button><button id="rebuild" class="button" title="清理产物后重新构建并启动">重新构建</button><button id="stop" class="button danger">■ 停止</button><button id="toggle-config" class="button config-toggle" type="button" aria-controls="settings-panel" aria-expanded="false">配置</button></div>
+          <div class="header-actions"><span id="status-pill" class="status-pill">未运行</span><button id="start" class="button primary">▶ 启动</button><button id="restart" class="button">↻ 重启</button><button id="rebuild" class="button" title="清理产物后重新构建并启动">重新构建</button><button id="stop" class="button danger">■ 停止</button><button id="check-project" class="button">启动检查</button><button id="toggle-config" class="button config-toggle" type="button" aria-controls="settings-panel" aria-expanded="false">配置</button></div>
         </header>
+        <div id="source-banner" class="source-banner hidden" role="status" aria-live="polite"><div><strong id="source-title"></strong><span id="source-message"></span></div><button id="source-restart" class="button small" type="button">重启后端</button></div>
         <div id="issue-banner" class="issue-banner hidden" role="status" aria-live="polite"><span class="issue-icon">!</span><div class="issue-copy"><strong id="issue-title"></strong><span id="issue-message"></span></div><button id="issue-view" class="button small">查看日志</button></div>
+        <div id="problem-advice" class="problem-advice hidden" role="status"></div>
         <div id="content" class="content config-collapsed">
           <section id="settings-panel" class="settings panel">
             <div class="section-title"><div><h2>启动配置</h2><p>界面设置会在启动时转换为相应参数</p></div><div class="section-actions"><button id="idea-import" class="text-button" type="button">从 IDEA 导入</button><button id="duplicate" class="text-button">复制配置</button><button id="delete" class="text-button destructive">删除</button><button id="save" class="button secondary">保存配置</button></div></div>
@@ -62,10 +75,16 @@ app.innerHTML = `
               <label class="field java-field"><span>其他 JVM 参数</span><textarea id="jvm-args" rows="3" placeholder="每行一个参数，例如 -Xmx512m"></textarea></label>
               <label class="field"><span>其他应用参数</span><textarea id="app-args" rows="3" placeholder="每行一个参数"></textarea></label>
               <label class="field"><span>环境变量</span><textarea id="environment" rows="3" placeholder="每行 KEY=VALUE"></textarea></label>
+              <label class="field wide"><span>就绪检查地址（可选，留空检查端口）</span><input id="health-url" placeholder="http://127.0.0.1:8080/actuator/health"><small class="field-hint">仅访问本机 HTTP(S) 地址；非 200 的接口可指定预期状态码。</small></label>
+              <label class="field"><span>就绪等待时间（秒）</span><input id="health-timeout" type="number" min="5" max="600" value="90"></label>
+              <label class="field"><span>健康接口预期状态码</span><input id="health-status" type="number" min="200" max="399" value="200"></label>
+              <label class="check-field wide"><input id="auto-open" type="checkbox"><span>前后端均就绪后自动打开页面</span></label>
+              <div id="dependencies" class="field wide"></div>
             </div>
             <div id="frontend-section" class="frontend-section java-field">
               <div class="section-title"><div><label class="check-field"><input id="frontend-enabled" type="checkbox"><strong>启用配套前端</strong></label><p>作为一组启停，也可在日志页单独操作前端或后端</p></div><button id="detect-frontend" class="button small" type="button">识别配套前端</button></div>
               <div id="frontend-fields" class="form-grid hidden">
+                <label class="check-field wide"><input id="wait-backend" type="checkbox"><span>全部启动时，等待后端就绪后再启动前端</span></label>
                 <label class="field wide"><span>前端目录（含 package.json）</span><div class="input-action"><input id="frontend-directory" aria-describedby="frontend-directory-hint"><button id="browse-frontend" class="button small browse-button" type="button">${browseIcon}浏览</button></div><small id="frontend-directory-hint" class="field-hint"></small></label>
                 <label class="field"><span>前端端口</span><input id="frontend-port" type="number" min="1" max="65535"></label>
                 <label class="field"><span>package.json 脚本</span><input id="frontend-script" list="frontend-script-options"><datalist id="frontend-script-options"></datalist></label>
@@ -77,13 +96,16 @@ app.innerHTML = `
                 <label class="field wide"><span>代理环境变量名</span><input id="frontend-proxy-variable" placeholder="VUE_APP_BASE_API_TARGET"></label>
                 <label class="field"><span>前端应用参数</span><textarea id="frontend-args" rows="3" placeholder="每行一个参数"></textarea></label>
                 <label class="field"><span>前端环境变量</span><textarea id="frontend-environment" rows="3" placeholder="每行 KEY=VALUE；端口和自动代理由运行台传入"></textarea></label>
+                <label class="field wide"><span>前端就绪检查地址（可选）</span><input id="frontend-health-url" placeholder="留空检查前端端口"></label>
+                <label class="field"><span>前端就绪等待时间（秒）</span><input id="frontend-health-timeout" type="number" min="5" max="600" value="90"></label>
+                <label class="field"><span>前端健康接口预期状态码</span><input id="frontend-health-status" type="number" min="200" max="399" value="200"></label>
               </div>
             </div>
           </section>
           <div id="log-resizer" class="log-resizer" role="separator" aria-label="调整运行日志高度" aria-orientation="horizontal" aria-controls="log-output" tabindex="0" title="上下拖动，调整运行日志高度"><span></span></div>
           <section class="logs panel">
             <div id="service-bar" class="service-bar hidden"><div id="service-tabs" class="service-tabs" role="tablist" aria-label="服务日志"></div><div class="service-actions"><button id="service-start" class="button small">启动当前服务</button><button id="service-stop" class="button small danger">停止当前服务</button></div></div>
-            <div class="log-toolbar"><div class="output-heading"><h2 id="output-title">运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="open-browser" class="button small">打开页面</button></div></div>
+            <div class="log-toolbar"><div class="output-heading"><h2 id="output-title">运行日志</h2><span id="log-summary">等待启动</span></div><div class="log-actions"><input id="log-search" placeholder="搜索日志"><button id="run-history" class="button small">启动历史</button><button id="open-browser" class="button small">打开页面</button></div></div>
             <div class="log-filterbar"><div class="log-view-controls"><div class="log-filters"><button class="log-filter selected" data-log-filter="focus" type="button">重点</button><button class="log-filter" data-log-filter="error" type="button">仅错误</button><button class="log-filter" data-log-filter="all" type="button">全部</button></div><button id="terminal-toggle" class="terminal-toggle" type="button" aria-controls="terminal-pane" aria-pressed="false"><span aria-hidden="true">&gt;_</span> 终端</button><div class="codex-actions"><button id="codex-analyze" class="terminal-toggle" type="button">Codex 分析</button><button id="codex-settings" class="terminal-toggle" type="button" aria-label="Codex 分析设置" title="模型与推理强度">▾</button></div></div><span id="log-filter-counts">普通日志会在重点视图中折叠</span><span id="terminal-shortcuts" class="hidden">Ctrl+C 中断 · Ctrl+V 粘贴</span></div>
             <div id="log-output" class="log-output"><div class="log-placeholder">启动项目后，日志将在这里实时显示。</div></div>
             <div id="terminal-pane" class="terminal-pane hidden"><div class="terminal-tabbar"><div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="终端标签页"></div><button id="terminal-new" class="button small" type="button">＋ 新标签页</button></div><div id="terminal-workspace" class="terminal-workspace"></div></div>
@@ -100,6 +122,30 @@ app.innerHTML = `
 `;
 
 const $ = (id) => document.getElementById(id);
+const processMetrics = new Map();
+let metricsLoading = false;
+const desktopUI = new DesktopTools({
+  api: {GetBuildInfo,CheckForUpdates,GetDesktopSettings,SaveDesktopSettings,HideToTray,QuitApplication},
+  notify,openURL:BrowserOpenURL,
+  onSettings:settings => {
+    $('hide-tray').disabled = !settings.trayAvailable;
+    $('close-behavior').textContent = settings.closeToTray && settings.trayAvailable ? '关闭窗口收起到托盘，项目继续运行' : '关闭窗口时停止所有项目';
+  },
+});
+const metricsLabel = document.createElement('span');
+metricsLabel.id = 'process-metrics'; metricsLabel.className = 'process-metrics hidden';
+metricsLabel.title = '当前服务及子进程的 CPU（按逻辑核心归一）与工作集内存；共享页可能重复计入。';
+document.querySelector('.output-heading').append(metricsLabel);
+const dependencyUI = new DependencyEditor($('dependencies'), () => {
+  dirty = true;
+  $('save').textContent = '保存更改';
+});
+const ideaJumper = new IDEAJumper({ OpenSourceInIDEA, GetEditorSettings, SetIDEAPath, PickIDEAPath }, notify);
+const editorSettingsButton = document.createElement('button');
+editorSettingsButton.type = 'button'; editorSettingsButton.className = 'terminal-toggle';
+editorSettingsButton.textContent = 'IDEA 跳转设置';
+editorSettingsButton.onclick = () => ideaJumper.settings(logServiceID()).catch(error => notify(error, true));
+document.querySelector('.log-view-controls').append(editorSettingsButton);
 const terminalUI = new TerminalConsole({
   api: { NewTerminal, GetTerminals, GetTerminalOutput, WriteTerminal, ResizeTerminal, CloseTerminal },
   prepare: async () => {
@@ -116,6 +162,19 @@ const gitUI = new GitChangesView({
   api: { GetGitChanges, GetGitFileDiff },
   directory: () => logSide === 'frontend' && draft?.frontend ? $('frontend-directory').value.trim() : $('directory').value.trim(),
   onChange: () => { if (draft) renderHeader(); },
+});
+const projectTools = new ProjectTools({
+  api: { CheckProject, StopService, ListRunHistory, ReadRunHistory, RunHistoryText,
+    ListTemplates, SaveTemplate, DeleteTemplate, ExportProjectTemplate, ReadTemplateFile, ApplyTemplate, PickDirectory },
+  notify, clipboard: ClipboardSetText,
+  getDraft: () => { readForm(); return draft; },
+  applyDraft: applyTemplateDraft,
+  selectOwner: async (serviceID) => {
+    const parent = projects.find(p => serviceIDs(p).includes(serviceID));
+    if (!parent) { notify('对应配置已删除，请刷新启动检查', true); return; }
+    await selectProject(parent.id);
+    if (draft?.id === parent.id) await selectLogSide(serviceID.endsWith(':frontend') ? 'frontend' : 'backend');
+  },
 });
 
 function terminalContext() {
@@ -280,7 +339,7 @@ function notify(message, error = false) {
 function stateFor(id) { return statuses.get(id)?.state || 'stopped'; }
 function isActive(id) { return activeState(stateFor(id)); }
 function usesPort(project) { return project.kind !== 'node' || project.portMode !== 'none'; }
-function stateText(state) { return ({ checking: '检查中', building: '构建中', starting: '启动中', running: '运行中', partial: '部分运行', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
+function stateText(state) { return ({ waiting: '等待后端就绪', checking: '检查中', building: '构建中', starting: '启动中', running: '运行中', unready: '未就绪', partial: '部分运行', failed: '启动失败', stopped: '未运行' })[state] || '未运行'; }
 function kindText(kind) { return ({ 'spring-maven': 'SPRING · MAVEN', 'spring-gradle': 'SPRING · GRADLE', node: 'VUE / NODE' })[kind] || '运行配置'; }
 function formatStartupDuration(ms) {
   const seconds = Math.max(0, ms) / 1000;
@@ -429,14 +488,68 @@ function readForm() {
   draft.jvmArgs = $('jvm-args').value;
   draft.appArgs = $('app-args').value;
   draft.environment = readEnvironment('environment');
+  draft.health = readHealth('');
+  draft.autoOpen = $('auto-open').checked;
+  draft.dependencies = dependencyUI.read();
+  draft.waitForBackend = draft.kind !== 'node' && $('frontend-enabled').checked && $('wait-backend').checked;
   frontendDraft = {
     directory: $('frontend-directory').value.trim(), port: Number($('frontend-port').value),
     script: $('frontend-script').value.trim(), packageManager: $('frontend-manager').value, portMode: $('frontend-port-mode').value,
     nodeHome: $('frontend-node-home').value.trim(), toolPath: $('frontend-tool').value.trim(), appArgs: $('frontend-args').value,
     environment: draft.kind !== 'node' && $('frontend-enabled').checked ? readEnvironment('frontend-environment') : (frontendDraft?.environment || {}), autoProxy: $('frontend-auto-proxy').checked, proxyVariable: $('frontend-proxy-variable').value.trim(),
+    health: readHealth('frontend-'),
   };
   draft.frontend = draft.kind !== 'node' && $('frontend-enabled').checked ? frontendDraft : null;
   if (!draft.frontend) logSide = 'backend';
+}
+
+function readHealth(prefix) {
+  const url = $(prefix + 'health-url').value.trim();
+  const timeoutSeconds = Number($(prefix + 'health-timeout').value || 90);
+  const expectedStatus = Number($(prefix + 'health-status').value || 200);
+  return !url && timeoutSeconds === 90 && expectedStatus === 200 ? null : { url, timeoutSeconds, expectedStatus };
+}
+
+function renderHealth(prefix, health) {
+  $(prefix + 'health-url').value = health?.url || '';
+  $(prefix + 'health-timeout').value = health?.timeoutSeconds || 90;
+  $(prefix + 'health-status').value = health?.expectedStatus || 200;
+}
+
+function applyTemplateDraft(project) {
+  if (dirty && !confirm('当前配置尚未保存，确定应用模板到新配置吗？')) return false;
+  gitVisible = false;
+  gitUI.reset();
+  resetIDEAImport();
+  draft = structuredClone(project);
+  const nextPort = nextProjectPort(projects, draft.kind);
+  retargetHealth(draft.health, draft.port, nextPort);
+  draft.port = nextPort;
+  if (draft.frontend) {
+    const frontPort = nextProjectPort(projects, 'node', [draft.port]);
+    retargetHealth(draft.frontend.health, draft.frontend.port, frontPort);
+    draft.frontend.port = frontPort;
+  }
+  frontendDraft = draft.frontend ? structuredClone(draft.frontend) : null;
+  frontendDirectoryLink.reset(draft.directory, frontendDraft?.directory);
+  current = null; logSide = 'backend'; ++logLoadVersion;
+  dirty = true; configOpen = true; logs = []; autoName = '';
+  suggestedProjectPort = draft.port;
+  $('log-search').value = '';
+  render();
+  notify('模板已填入新配置，请检查目录和本机配置后保存');
+  return true;
+}
+
+function retargetHealth(health, oldPort, newPort) {
+  if (!health?.url || !newPort) return;
+  try {
+    const url = new URL(health.url);
+    if (Number(url.port || (url.protocol === 'https:' ? 443 : 80)) === oldPort) {
+      url.port = String(newPort);
+      health.url = url.href;
+    }
+  } catch { /* SaveProject reports invalid URLs. */ }
 }
 
 function reusablePaths(field) {
@@ -484,6 +597,10 @@ function openReuseDialog(field) {
 
 function renderForm() {
   const p = draft;
+  dependencyUI.render(p.dependencies);
+  $('wait-backend').checked = !!p.waitForBackend;
+  renderHealth('', p.health);
+  $('auto-open').checked = !!p.autoOpen;
   for (const [field, value] of Object.entries({ name: p.name, directory: p.directory, kind: p.kind,
     port: p.port, module: p.module, 'java-home': p.javaHome, 'tool-path': p.toolPath, 'node-tool': p.toolPath, 'node-home': p.nodeHome, manager: p.packageManager || 'npm',
     script: p.script || 'dev', 'port-mode': p.portMode || 'none', 'config-file': p.configFile,
@@ -495,6 +612,7 @@ function renderForm() {
   document.querySelectorAll('.java-field').forEach((el) => el.classList.toggle('hidden', !java));
   document.querySelectorAll('.node-field').forEach((el) => el.classList.toggle('hidden', java));
   const f = p.frontend || frontendDraft || blankFrontend();
+  renderHealth('frontend-', f.health);
   $('frontend-enabled').checked = !!p.frontend;
   $('frontend-fields').classList.toggle('hidden', !p.frontend);
   for (const [field, value] of Object.entries({ directory: f.directory, port: f.port, script: f.script, manager: f.packageManager,
@@ -507,6 +625,7 @@ function renderForm() {
   renderProxyHint();
   const active = p.id && groupActive(p);
   document.querySelectorAll('.settings input, .settings select, .settings textarea, .settings button').forEach((el) => { el.disabled = !!active; });
+  $('dependencies').querySelector('.dependency-add').disabled = !!active || (p.dependencies || []).length >= 16;
   $('reuse-java').disabled = !!active || reusablePaths('javaHome').length === 0;
   $('reuse-tool').disabled = !!active || reusablePaths('toolPath').length === 0;
   $('duplicate').disabled = false;
@@ -521,6 +640,15 @@ function renderHeader() {
   $('header-path').textContent = p.directory || '请选择项目目录';
   const state = groupState(p, statuses);
   const pending = pendingProjects.has(p.id);
+  const backendStatus = statuses.get(p.id) || {};
+  const sourceVisible = p.kind !== 'node' && isActive(p.id) && (backendStatus.sourceChanged || backendStatus.sourceError);
+  $('source-banner').classList.toggle('hidden', !sourceVisible);
+  $('source-title').textContent = backendStatus.sourceChanged ? '后端代码已更新，需重启以应用更改' : '源码检查暂不可用';
+  $('source-message').textContent = [backendStatus.sourceMessage, backendStatus.sourceError].filter(Boolean).join(' · ');
+  $('source-restart').classList.toggle('hidden', !backendStatus.sourceChanged);
+  $('source-restart').disabled = pending;
+  $('check-project').disabled = pending;
+  $('run-history').disabled = !p.id;
   $('status-pill').textContent = stateText(state);
   $('status-pill').className = `status-pill ${state}`;
   $('start').textContent = p.frontend ? (groupActive(p) && canStartGroup(p) ? '▶ 补齐启动' : '▶ 全部启动') : '▶ 启动';
@@ -535,7 +663,8 @@ function renderHeader() {
   $('open-browser').disabled = !p.id || stateFor(page.id) !== 'running' || !usesPort(page);
   const service = serviceProject();
   const status = statuses.get(service.id) || { state: 'stopped' };
-  $('log-summary').textContent = status.state === 'failed' ? (status.error || '启动失败') : `${stateText(status.state)} · ${usesPort(service) ? `端口 ${service.port}` : '未指定端口'}`;
+  renderProcessMetrics();
+  $('log-summary').textContent = ['failed', 'unready'].includes(status.state) ? (status.error || stateText(status.state)) : `${stateText(status.state)} · ${usesPort(service) ? `端口 ${service.port}` : '未指定端口'}`;
   if (recoveryText(status)) $('log-summary').textContent += ` · ${recoveryText(status)}`;
   $('service-bar').classList.remove('hidden');
   $('service-tabs').replaceChildren();
@@ -571,6 +700,27 @@ function applyOutputView() {
   document.querySelector('.log-toolbar').classList.toggle('hidden', gitVisible);
   document.querySelector('.log-filterbar').classList.toggle('hidden', gitVisible);
   if (gitVisible) { $('log-output').classList.add('hidden'); $('terminal-pane').classList.add('hidden'); }
+  renderProcessMetrics();
+}
+
+function renderProcessMetrics() {
+  const service = serviceProject();
+  const status = statuses.get(service?.id);
+  metricsLabel.classList.toggle('hidden', gitVisible || !status?.pid || !activeState(status.state));
+  metricsLabel.textContent = metricsText(processMetrics.get(service?.id));
+}
+async function refreshProcessMetrics() {
+  if (metricsLoading || document.hidden || !draft || gitVisible || !groupActive(draft)) return;
+  metricsLoading = true;
+  try {
+    const values = await GetProcessMetrics();
+    processMetrics.clear();
+    for (const value of values || []) {
+      if (statuses.get(value.id)?.startedAt === value.startedAt) processMetrics.set(value.id,value);
+    }
+    renderProcessMetrics();
+  } catch { metricsLabel.textContent = '资源信息暂不可用'; }
+  finally {metricsLoading = false;}
 }
 
 function renderProxyHint() {
@@ -609,15 +759,16 @@ function matchesLog(line, query) {
 
 function renderIssue() {
   const banner = $('issue-banner');
-  if (gitVisible) { banner.classList.add('hidden'); return; }
+  if (gitVisible) { banner.classList.add('hidden'); $('problem-advice').classList.add('hidden'); return; }
   const status = statuses.get(logServiceID());
   const currentLogs = logs.filter((line) => currentAttemptLog(line, status));
+  renderProblemAdvice(currentLogs, status);
   const errors = currentLogs.filter((line) => logLevel(line) === 'error');
   const warnings = currentLogs.filter((line) => logLevel(line) === 'warn');
   const latest = errors.find((line) => actionableError(logDisplay(line).text)) || errors[0] || warnings[0];
   const recovered = !latest && status?.recovery === 'recovered';
   banner.classList.toggle('recovered', recovered);
-  banner.classList.toggle('hidden', !latest && !recovered);
+  banner.classList.toggle('hidden', !latest && !recovered && status?.state !== 'unready');
   banner.classList.toggle('warning', !!latest && !errors.length);
   if (recovered) {
     $('issue-title').textContent = '已自动恢复';
@@ -625,10 +776,39 @@ function renderIssue() {
     $('issue-message').title = $('issue-message').textContent;
     return;
   }
-  if (!latest) return;
+  if (!latest) {
+    if (status?.state === 'unready') {
+      $('issue-title').textContent = '服务未就绪';
+      $('issue-message').textContent = status.error;
+      $('issue-message').title = status.error;
+    }
+    return;
+  }
   $('issue-title').textContent = errors.length ? `检测到错误记录 ${errors.length} 行` : `检测到警告 ${warnings.length} 行`;
   $('issue-message').textContent = logDisplay(latest).text.trim();
   $('issue-message').title = logDisplay(latest).text.trim();
+}
+
+let adviceKey = '';
+function renderProblemAdvice(lines, status) {
+  const advice = problemAdvice(lines, status);
+  const element = $('problem-advice');
+  element.classList.toggle('hidden', !advice);
+  const key = JSON.stringify(advice);
+  if (key === adviceKey) return;
+  adviceKey = key;
+  element.replaceChildren();
+  if (!advice) return;
+  const title = document.createElement('strong');
+  title.textContent = advice.title;
+  const evidence = document.createElement('code');
+  evidence.textContent = advice.evidence;
+  evidence.title = advice.evidence;
+  const list = document.createElement('ol');
+  for (const step of advice.steps) {
+    const item = document.createElement('li'); item.textContent = step; list.append(item);
+  }
+  element.append(title, evidence, list);
 }
 
 function renderLogCounts() {
@@ -665,7 +845,10 @@ function appendLogRow(line, output) {
   time.textContent = line.time;
   const message = document.createElement('span');
   message.className = 'log-message';
-  renderAnsiLog(message, display.runs, BrowserOpenURL);
+  const serviceID = logServiceID();
+  renderAnsiLog(message, display.runs, BrowserOpenURL, {
+    links: sourceLinks, open: location => ideaJumper.open(serviceID, location),
+  });
   row.append(time, message);
   if (logMode === 'focus') {
     const badge = document.createElement('span');
@@ -853,10 +1036,18 @@ async function saveCurrent() {
 
 async function act(action) {
   const id = draft?.id;
-  if (id && pendingProjects.has(id)) return;
-  if (id) pendingProjects.add(id);
+  if (!draft || pendingProjects.has(id)) return;
+  pendingProjects.add(id);
   renderHeader();
   try {
+    if (['start', 'service-start', 'rebuild', 'restart', 'backend-restart'].includes(action)) {
+      readForm();
+      const project = draft;
+      const side = logSide;
+      const scope = action === 'backend-restart' ? 'backend' : action === 'service-start' ? side : '';
+      if (!await projectTools.check(project, scope, false)) return;
+      if (draft !== project || logSide !== side) { notify('已切换项目或服务，请在当前页面重新启动'); return; }
+    }
     if (action === 'start') {
       const saved = dirty || !draft.id ? await saveCurrent() : draft;
       await StartProject(saved.id);
@@ -864,6 +1055,8 @@ async function act(action) {
       await StopProject(draft.id);
     } else if (action === 'restart') {
       await RestartProject(draft.id);
+    } else if (action === 'backend-restart') {
+      await RestartService(draft.id);
     } else if (action === 'rebuild') {
       const saved = dirty || !draft.id ? await saveCurrent() : draft;
       await RebuildProject(saved.id);
@@ -874,7 +1067,7 @@ async function act(action) {
       await StopService(logServiceID());
     }
   } catch (error) { notify(error, true); }
-  finally { if (id) pendingProjects.delete(id); renderHeader(); renderList(); }
+  finally { pendingProjects.delete(id); if (draft) renderHeader(); renderList(); }
 }
 
 async function quickAction(id, action) {
@@ -883,6 +1076,8 @@ async function quickAction(id, action) {
   renderList();
   try {
     if (action === 'start') {
+      const p = draft?.id === id ? (readForm(), draft) : projects.find(project => project.id === id);
+      if (!await projectTools.check(p, '', false)) return;
       if (draft?.id === id && dirty) await saveCurrent();
       await StartProject(id);
     } else {
@@ -964,6 +1159,17 @@ async function detectPairedFrontend(directory) {
 }
 
 function bind() {
+  $('desktop-settings').onclick = () => desktopUI.open().catch(error=>notify(error,true));
+  $('hide-tray').onclick = () => desktopUI.hide();
+  EventsOn('desktop:settings', settings=>desktopUI.apply(settings));
+  EventsOn('desktop:tray-error', message=>notify(message,true));
+  $('source-restart').onclick = () => act('backend-restart');
+  $('templates').onclick = () => projectTools.openLibrary().catch(error => notify(error, true));
+  $('check-project').onclick = () => {
+    try { readForm(); projectTools.check(draft).catch(error => notify(error, true)); }
+    catch (error) { notify(error, true); }
+  };
+  $('run-history').onclick = () => projectTools.openHistory(logServiceID(), serviceProject()?.name || draft.name).catch(error => notify(error, true));
   $('add-project').onclick = () => addProject();
   $('empty-add').onclick = () => addProject();
   $('duplicate').onclick = () => addProject(true);
@@ -1067,6 +1273,7 @@ function bind() {
       alertedRuns.delete(status.id);
     }
     if (isNewRun(statuses.get(status.id), status)) {
+      processMetrics.delete(status.id);
       alertedRuns.delete(status.id);
       projectProblems.delete(status.id);
       if (logServiceID() === status.id) { logs = []; renderLogs(); }
@@ -1076,6 +1283,8 @@ function bind() {
     if (draft && serviceIDs(draft).includes(status.id)) { renderHeader(); if (!dirty) renderForm(); }
     if (logServiceID() === status.id) renderIssue();
   });
+  EventsOn('project:preflight', report => { if (!report.allowed) projectTools.showReport(report); });
+  EventsOn('project:ready', url => BrowserOpenURL(url));
   EventsOn('project:log', ({ id, line }) => {
     const level = logLevel(line);
     const currentAttempt = currentAttemptLog(line, statuses.get(id));
@@ -1103,6 +1312,8 @@ function bind() {
 }
 
 bind();
+desktopUI.restore().catch(error=>notify(error,true));
+setInterval(refreshProcessMetrics,2000);
 terminalUI.restore().catch((error) => notify(`恢复终端失败：${error}`, true));
 setInterval(refreshStartupTimes, 500);
 Promise.all([ListProjects(), GetStatuses()]).then(([items, states]) => {

@@ -30,6 +30,21 @@ func TestMain(m *testing.M) {
 
 func helperProcess() int {
 	args := os.Args[1:]
+	if response := os.Getenv("RUNNER_TEST_UPDATE"); response != "" {
+		if response == "timeout" {
+			time.Sleep(time.Minute)
+			return 1
+		}
+		fmt.Print(response)
+		return 0
+	}
+	if path := os.Getenv("RUNNER_TEST_EDITOR"); path != "" {
+		data, _ := json.Marshal(args)
+		if os.WriteFile(path, data, 0600) != nil {
+			return 1
+		}
+		return 0
+	}
 	if os.Getenv("RUNNER_TEST_CODEX") == "1" {
 		return codexHelperProcess(args)
 	}
@@ -141,10 +156,11 @@ func mavenFixture(t *testing.T) (Project, string) {
 		}
 	}
 	files := map[string]string{
-		"pom.xml":        `<project><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>common</module><module>app</module></modules></project>`,
-		"common/pom.xml": `<project><artifactId>common</artifactId><version>1</version></project>`,
-		"app/pom.xml":    `<project><artifactId>app</artifactId><parent><version>1</version></parent><properties><output.name>${project.artifactId}-test</output.name></properties><build><finalName>${output.name}</finalName><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId><executions><execution><goals><goal>repackage</goal></goals></execution></executions></plugin></plugins></build></project>`,
-		".git":           "fixture",
+		"local config.properties": "# fixture config\n",
+		"pom.xml":                 `<project><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>common</module><module>app</module></modules></project>`,
+		"common/pom.xml":          `<project><artifactId>common</artifactId><version>1</version></project>`,
+		"app/pom.xml":             `<project><artifactId>app</artifactId><parent><version>1</version></parent><properties><output.name>${project.artifactId}-test</output.name></properties><build><finalName>${output.name}</finalName><plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId><executions><execution><goals><goal>repackage</goal></goals></execution></executions></plugin></plugins></build></project>`,
+		".git":                    "fixture",
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0600); err != nil {

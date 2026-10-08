@@ -1,5 +1,5 @@
 export function isNewRun(previous, next) {
-  return ['checking', 'building', 'starting'].includes(next.state) && previous?.startedAt !== next.startedAt;
+  return ['waiting', 'checking', 'building', 'starting'].includes(next.state) && previous?.startedAt !== next.startedAt;
 }
 
 export function actionableError(text) {
@@ -12,7 +12,7 @@ export function serviceIDs(project) {
 }
 
 export function activeState(state) {
-  return ['checking', 'building', 'starting', 'running'].includes(state);
+  return ['waiting', 'checking', 'building', 'starting', 'running', 'unready'].includes(state);
 }
 
 export function currentAttemptLog(line, status) {
@@ -29,6 +29,8 @@ export function groupState(project, statuses) {
   if (states.includes('building')) return 'building';
   if (states.includes('checking')) return 'checking';
   if (states.includes('starting')) return 'starting';
+  if (states.includes('unready')) return 'unready';
+  if (states.includes('waiting')) return 'starting';
   if (states.some(activeState)) return 'partial';
   if (states.includes('failed')) return 'failed';
   return 'stopped';

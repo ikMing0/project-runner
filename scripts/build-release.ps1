@@ -33,8 +33,11 @@ try {
 
     Invoke-Checked 'go' @('test', './...', '-count=1', '-timeout=5m')
     Invoke-Checked 'go' @('vet', './...')
+    $commit = & git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw 'Cannot identify the source commit.' }
+    $buildFlags = "-X main.buildVersion=$Version -X main.buildCommit=$commit"
     # Frontend assets and bindings were generated above from this checkout.
-    Invoke-Checked $WailsExecutable @('build', '-s', '-skipbindings', '-m', '-nosyncgomod', '-trimpath', '-platform', 'windows/amd64', '-o', 'ProjectRunner.exe')
+    Invoke-Checked $WailsExecutable @('build', '-s', '-skipbindings', '-m', '-nosyncgomod', '-trimpath', '-platform', 'windows/amd64', '-ldflags', $buildFlags, '-o', 'ProjectRunner.exe')
 
     $releaseDirectory = Join-Path $projectRoot 'build/bin/release'
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
@@ -42,8 +45,6 @@ try {
     Copy-Item -LiteralPath 'build/bin/ProjectRunner.exe' -Destination $releaseExecutable -Force
     $checksum = (Get-FileHash -LiteralPath $releaseExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseDirectory 'SHA256SUMS.txt') -Value "$checksum  ProjectRunner.exe`n" -Encoding utf8NoBOM -NoNewline
-    $commit = & git rev-parse HEAD
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the source commit.' }
     $notes = @"
 Windows x64 版本：$Version
 源码提交：$commit

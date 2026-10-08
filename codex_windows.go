@@ -202,7 +202,7 @@ func validateCodexSelection(options CodexOptions, model, effort string) error {
 	return nil
 }
 
-var codexLogSecrets = regexp.MustCompile(`(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)`)
+var codexLogSecrets = regexp.MustCompile(`(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie)["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)`)
 var codexBearer = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
 var codexURLCredentials = regexp.MustCompile(`(://)[^\s/:@]+:[^\s/@]+@`)
 

@@ -22,6 +22,7 @@ type FrontendConfig struct {
 	Environment    map[string]string `json:"environment"`
 	AutoProxy      bool              `json:"autoProxy"`
 	ProxyVariable  string            `json:"proxyVariable"`
+	Health         *HealthConfig     `json:"health,omitempty"`
 }
 
 func frontendID(id string) string { return id + ":frontend" }
@@ -50,7 +51,7 @@ func frontendProject(backend Project) Project {
 	}
 	return Project{ID: frontendID(backend.ID), Name: backend.Name + " · 前端", Kind: "node", Directory: f.Directory,
 		Port: f.Port, PackageManager: f.PackageManager, Script: f.Script, PortMode: f.PortMode,
-		NodeHome: f.NodeHome, ToolPath: f.ToolPath, AppArgs: f.AppArgs, Environment: env}
+		NodeHome: f.NodeHome, ToolPath: f.ToolPath, AppArgs: f.AppArgs, Environment: env, Health: f.Health}
 }
 
 // Caller holds a.mu. Child services are derived, not saved as duplicate projects.
@@ -68,6 +69,11 @@ func (a *App) projectLocked(id string) (Project, bool) {
 }
 
 func validateFrontend(f FrontendConfig, backendPort int) (FrontendConfig, error) {
+	var healthErr error
+	f.Health, healthErr = validateHealth(f.Health)
+	if healthErr != nil {
+		return f, healthErr
+	}
 	dir, err := filepath.Abs(f.Directory)
 	if strings.TrimSpace(f.Directory) == "" || err != nil {
 		return f, errors.New("请选择前端项目目录")

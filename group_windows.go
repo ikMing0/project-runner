@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 func (a *App) serviceIDs(id string) ([]string, error) {
@@ -42,12 +43,24 @@ func (a *App) StartService(id string) error {
 	if a.closing {
 		return errors.New("运行台正在关闭")
 	}
+	a.mu.Lock()
+	waiting := a.frontendWaits[id] != nil
+	a.mu.Unlock()
+	if waiting {
+		return errors.New("前端正在等待后端，可停止等待后单独启动")
+	}
+	if err := a.checkSavedServices([]string{id}); err != nil {
+		return err
+	}
 	return a.startProject(id, false)
 }
 
 func (a *App) StopService(id string) error {
 	a.groupMu.Lock()
 	defer a.groupMu.Unlock()
+	if a.cancelFrontendWaits([]string{id}, "用户停止，取消前端等待") && strings.HasSuffix(id, ":frontend") {
+		return nil
+	}
 	return a.stopService(id)
 }
 
@@ -64,11 +77,13 @@ func (a *App) StopProject(id string) error {
 	return nil
 }
 
-func (a *App) RestartProject(id string) error { return a.restartGroup(id, false) }
+func (a *App) RestartProject(id string) error { return a.restartGroup(id, false, false) }
 
-func (a *App) RebuildProject(id string) error { return a.restartGroup(id, true) }
+func (a *App) RebuildProject(id string) error { return a.restartGroup(id, true, false) }
 
-func (a *App) restartGroup(id string, clean bool) error {
+func (a *App) RestartService(id string) error { return a.restartGroup(id, false, true) }
+
+func (a *App) restartGroup(id string, clean, single bool) error {
 	a.groupMu.Lock()
 	defer a.groupMu.Unlock()
 	if a.closing {
@@ -78,6 +93,9 @@ func (a *App) restartGroup(id string, clean bool) error {
 	if err != nil {
 		return err
 	}
+	if single {
+		ids = []string{id}
+	}
 	if clean {
 		a.mu.Lock()
 		p, _ := a.projectLocked(id)
@@ -86,11 +104,17 @@ func (a *App) restartGroup(id string, clean bool) error {
 			return errors.New("重新构建仅适用于 Maven 项目")
 		}
 	}
+	// Validate settings before stopping a healthy instance. Ports held by the
+	// same active services are intentionally skipped until after they exit.
+	if err := a.checkConfiguredServices(ids, true); err != nil {
+		return err
+	}
 	a.stopServices(ids, true)
 	return a.startServices(ids, clean)
 }
 
 func (a *App) stopServices(ids []string, wait bool) bool {
+	cancelled := a.cancelFrontendWaits(ids, "用户停止，取消前端等待")
 	a.mu.Lock()
 	var runs []*run
 	for _, id := range ids {
@@ -107,16 +131,19 @@ func (a *App) stopServices(ids []string, wait bool) bool {
 			<-r.done
 		}
 	}
-	return len(runs) > 0
+	return len(runs) > 0 || cancelled
 }
 
 func (a *App) startServices(ids []string, clean bool) error {
+	if err := a.checkSavedServices(ids); err != nil {
+		return err
+	}
 	// Check both ports before starting either side. Existing services are left
 	// running when the user starts only the missing side of a partial group.
 	a.mu.Lock()
 	var pending []string
 	for _, id := range ids {
-		if a.runs[id] == nil {
+		if a.runs[id] == nil && a.frontendWaits[id] == nil {
 			pending = append(pending, id)
 		}
 	}
@@ -166,6 +193,9 @@ func (a *App) startServices(ids []string, clean bool) error {
 	a.mu.Unlock()
 	var started []string
 	for _, id := range pending {
+		if a.scheduleFrontendWait(id) {
+			continue
+		}
 		if err := a.startProject(id, clean); err != nil {
 			a.stopServices(started, true)
 			return err

@@ -6,10 +6,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +31,8 @@ type run struct {
 	temporary      []string
 	buildDirectory string
 	stage          atomic.Uint64
+	sourceBaseline *sourceSnapshot
+	sourceError    string
 }
 
 var errRunCancelled = errors.New("启动已取消")
@@ -61,6 +61,13 @@ func (a *App) startProject(id string, clean bool) error {
 		return errors.New("项目已经在运行")
 	}
 	usesPort := p.Kind != "node" || p.PortMode != "none"
+	for otherID := range a.frontendWaits {
+		other, _ := a.projectLocked(otherID)
+		if otherID != id && usesPort && other.Port == p.Port {
+			a.mu.Unlock()
+			return fmt.Errorf("端口 %d 已预留给等待后端的前端", p.Port)
+		}
+	}
 	for otherID := range a.runs {
 		other, _ := a.projectLocked(otherID)
 		if usesPort && (other.Kind != "node" || other.PortMode != "none") && otherID != id && other.Port == p.Port {
@@ -113,6 +120,20 @@ func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
 	var cmd *exec.Cmd
 	var err error
 	build := plan.Build
+	captureSources := func() {
+		if p.Kind == "node" {
+			return
+		}
+		var sourceErr error
+		r.sourceBaseline, sourceErr = snapshotProjectSources(p, nil, true)
+		r.sourceError = ""
+		if sourceErr != nil {
+			r.sourceError = sourceErr.Error()
+		}
+	}
+	// Capture before cache verification/building, so edits made during either
+	// step remain visible rather than being accepted as the running baseline.
+	captureSources()
 	if plan.Cache != nil {
 		phase = "检查"
 		a.appendLog(id, "system", "检查当前工作树的构建输入和启动产物")
@@ -196,6 +217,7 @@ func (a *App) runPlan(id string, p Project, r *run, plan launchPlan) {
 		}
 		// Edits between attempts must be compared with the recovery build's
 		// inputs, not those of the original reused/incremental artifact.
+		captureSources()
 		plan.Cache.inputs, _ = plan.Cache.fingerprint()
 		prepared := mavenCleanCommand(*plan.Build)
 		build = &prepared
@@ -213,6 +235,7 @@ func (a *App) beginMavenRecovery(id string) {
 	a.mu.Lock()
 	status := a.statuses[id]
 	status.State, status.PID, status.Attempt, status.Recovery = "building", 0, 2, "building"
+	status.SourceChanged, status.SourceMessage, status.SourceError = false, "", ""
 	status.StartupDurationMs = nil
 	a.statuses[id] = status
 	a.mu.Unlock()
@@ -272,10 +295,13 @@ func (a *App) executeStage(id string, p Project, r *run, spec commandSpec, state
 	}
 	a.appendLog(id, "system", fmt.Sprintf("%s %s（PID %d，端口 %d）", label, p.Name, cmd.Process.Pid, p.Port))
 	if state == "starting" {
-		if p.Kind == "node" && p.PortMode == "none" {
+		if p.Kind != "node" {
+			go a.watchProjectSources(id, p, r, stageDone, generation, r.sourceBaseline, r.sourceError, 3*time.Second)
+		}
+		if p.Kind == "node" && p.PortMode == "none" && (p.Health == nil || p.Health.URL == "") {
 			a.markRunningStage(id, r, generation)
 		} else {
-			go a.waitForReady(id, p.Port, r, stageDone, generation)
+			go a.waitForProjectReady(id, p, r, stageDone, generation)
 		}
 	}
 	err = cmd.Wait()
@@ -329,6 +355,7 @@ func (a *App) finishRun(id string, p Project, r *run, cmd *exec.Cmd, phase strin
 	// its initial status before the old run's final status has been emitted.
 	a.emitStatus(status)
 	delete(a.runs, id)
+	a.archiveRunLocked(id, p, status)
 	close(r.done)
 	a.mu.Unlock()
 }
@@ -385,31 +412,6 @@ func newJob() (windows.Handle, error) {
 	return job, nil
 }
 
-func (a *App) waitForReady(id string, port int, r *run, stageDone <-chan struct{}, generation uint64) {
-	deadline := time.NewTimer(90 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(350 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.done:
-			return
-		case <-stageDone:
-			return
-		case <-deadline.C:
-			return
-		case <-ticker.C:
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 150*time.Millisecond)
-			if err != nil {
-				continue
-			}
-			_ = conn.Close()
-			a.markRunningStage(id, r, generation)
-			return
-		}
-	}
-}
-
 func (a *App) markRunning(id string, r *run) {
 	a.markRunningStage(id, r, r.stage.Load())
 }
@@ -417,23 +419,25 @@ func (a *App) markRunning(id string, r *run) {
 func (a *App) markRunningStage(id string, r *run, generation uint64) {
 	a.mu.Lock()
 	status := a.statuses[id]
-	if a.runs[id] != r || status.State != "starting" || r.stage.Load() != generation {
+	if a.runs[id] != r || (status.State != "starting" && status.State != "unready") || r.stage.Load() != generation {
 		a.mu.Unlock()
 		return
 	}
 	duration := time.Since(r.started).Milliseconds()
 	status.State = "running"
+	status.Error = ""
 	status.StartupDurationMs = &duration
 	recovered := status.Recovery == "starting"
 	if recovered {
 		status.Recovery = "recovered"
 	}
 	a.statuses[id] = status
-	a.mu.Unlock()
 	a.emitStatus(status)
+	a.mu.Unlock()
 	if recovered {
 		a.appendLog(id, "system", "清理重建后启动成功，已自动恢复；首次失败日志已保留")
 	}
+	a.maybeOpenPage(id)
 }
 
 // os/exec owns the copying goroutines and drains them before Wait returns.

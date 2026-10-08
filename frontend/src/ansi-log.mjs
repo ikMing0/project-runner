@@ -93,7 +93,7 @@ export function logLinks(text) {
   return links;
 }
 
-export function renderAnsiLog(element, runs, openURL) {
+export function renderAnsiLog(element, runs, openURL, sourceActions) {
   const document = element.ownerDocument;
   function styledSpan(run, text) {
     const span = document.createElement('span');
@@ -108,12 +108,15 @@ export function renderAnsiLog(element, runs, openURL) {
     if (run.underline) span.style.textDecoration = 'underline';
     return span;
   }
-  if (typeof openURL !== 'function') {
+  if (typeof openURL !== 'function' && !sourceActions) {
     element.replaceChildren(...runs.map(run => styledSpan(run, run.text)));
     return;
   }
   const text = runs.map(run => run.text).join('');
-  const links = logLinks(text);
+  const urls = typeof openURL === 'function' ? logLinks(text) : [];
+  const sources = sourceActions ? sourceActions.links(text).filter(source =>
+    !urls.some(url => source.start < url.end && source.end > url.start)) : [];
+  const links = [...urls, ...sources].sort((a, b) => a.start - b.start);
   if (!links.length) {
     element.replaceChildren(...runs.map(run => styledSpan(run, run.text)));
     return;
@@ -133,16 +136,22 @@ export function renderAnsiLog(element, runs, openURL) {
   let offset = 0;
   for (const link of links) {
     children.push(...styledRange(offset, link.start));
-    const anchor = document.createElement('a');
-    anchor.className = 'log-link';
-    anchor.href = link.url;
-    anchor.title = `用默认浏览器打开 ${link.url}`;
-    anchor.target = '_blank';
-    anchor.rel = 'noopener noreferrer';
+    const anchor = document.createElement(link.url ? 'a' : 'button');
+    anchor.className = link.url ? 'log-link' : 'log-source-link';
+    if (link.url) {
+      anchor.href = link.url;
+      anchor.title = `用默认浏览器打开 ${link.url}`;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+    } else {
+      anchor.type = 'button';
+      anchor.title = `在 IDEA 打开 ${link.path} 第 ${link.line} 行`;
+    }
     anchor.append(...styledRange(link.start, link.end));
     anchor.addEventListener('click', event => {
       event.preventDefault();
-      openURL(link.url);
+      if (link.url) openURL(link.url);
+      else sourceActions.open(link);
     });
     children.push(anchor);
     offset = link.end;
