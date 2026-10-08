@@ -98,7 +98,8 @@ func TestGradleSourceSnapshotSkipsFrontendAndOutput(t *testing.T) {
 	if len(before.Files) != 2 {
 		t.Fatalf("unexpected inputs: %+v", before.Files)
 	}
-	writeWorkflowFile(t, filepath.Join(root, "backend/src/main/java/Sample.java"), "new")
+	// Use a size change: rapid writes can share a timestamp on Windows CI.
+	writeWorkflowFile(t, filepath.Join(root, "backend/src/main/java/Sample.java"), "updated source")
 	now, err := snapshotProjectSources(p, before, false)
 	if err != nil || changedSourceMessage(before, now) == "" {
 		t.Fatalf("Gradle module change missed: %v", err)
