@@ -149,7 +149,7 @@ func writeExecutableJar(path string) error {
 
 func mavenFixture(t *testing.T) (Project, string) {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "工作树 A & demo")
+	root := filepath.Join(canonicalTestTempDir(t), "工作树 A & demo")
 	for _, directory := range []string{"common", "app", "JDK 21/bin", "Maven 工具 (1)"} {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0700); err != nil {
 			t.Fatal(err)
