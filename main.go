@@ -6,6 +6,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
@@ -20,6 +21,10 @@ func main() {
 		Height:    820,
 		MinWidth:  980,
 		MinHeight: 650,
+		Windows: &windows.Options{
+			// Apply the final WebView bounds on the UI thread after resize animations settle.
+			ResizeDebounceMS: 80,
+		},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

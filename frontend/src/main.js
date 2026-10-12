@@ -47,7 +47,7 @@ app.innerHTML = `
       </div>
       <div id="project-view" class="project-view hidden">
         <header class="project-header">
-          <div><div class="eyebrow" id="header-kind">运行配置</div><h1 id="header-name">项目</h1><p id="header-path"></p></div>
+          <div class="project-heading"><div class="eyebrow" id="header-kind">运行配置</div><h1 id="header-name">项目</h1><p id="header-path"></p></div>
           <div class="header-actions"><span id="status-pill" class="status-pill">未运行</span><button id="start" class="button primary">▶ 启动</button><button id="restart" class="button">↻ 重启</button><button id="rebuild" class="button" title="清理产物后重新构建并启动">重新构建</button><button id="stop" class="button danger">■ 停止</button><button id="check-project" class="button">启动检查</button><button id="toggle-config" class="button config-toggle" type="button" aria-controls="settings-panel" aria-expanded="false">配置</button></div>
         </header>
         <div id="source-banner" class="source-banner hidden" role="status" aria-live="polite"><div><strong id="source-title"></strong><span id="source-message"></span></div><button id="source-restart" class="button small" type="button">重启后端</button></div>
@@ -263,8 +263,8 @@ function logHeightBounds() {
   const content = $('content');
   const style = getComputedStyle(content);
   const available = content.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - $('log-resizer').offsetHeight;
-  const max = Math.max(170, Math.floor(available - 104));
-  const min = Math.min(max, terminalUI.isVisible() ? 320 : draft.frontend ? 220 : 170);
+  const max = Math.max(280, Math.floor(available - 104));
+  const min = Math.min(max, terminalUI.isVisible() ? 320 : 280);
   return { min, max };
 }
 
@@ -637,7 +637,9 @@ function renderHeader() {
   const p = draft;
   $('header-kind').textContent = `${kindText(p.kind)}${p.frontend ? ' + VUE / NODE' : ''}`;
   $('header-name').textContent = p.name || '新项目';
+  $('header-name').title = p.name || '新项目';
   $('header-path').textContent = p.directory || '请选择项目目录';
+  $('header-path').title = p.directory || '';
   const state = groupState(p, statuses);
   const pending = pendingProjects.has(p.id);
   const backendStatus = statuses.get(p.id) || {};
@@ -645,6 +647,7 @@ function renderHeader() {
   $('source-banner').classList.toggle('hidden', !sourceVisible);
   $('source-title').textContent = backendStatus.sourceChanged ? '后端代码已更新，需重启以应用更改' : '源码检查暂不可用';
   $('source-message').textContent = [backendStatus.sourceMessage, backendStatus.sourceError].filter(Boolean).join(' · ');
+  $('source-message').title = $('source-message').textContent;
   $('source-restart').classList.toggle('hidden', !backendStatus.sourceChanged);
   $('source-restart').disabled = pending;
   $('check-project').disabled = pending;
